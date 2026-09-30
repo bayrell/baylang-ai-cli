@@ -611,133 +611,6 @@ class Provider(abc.ABC):
     def get_api_key(self) -> str:
         """Вернуть API-ключ провайдера."""
 
-    @abc.abstractmethod
-    async def send(
-        self, context: Context, tools: Optional[list[dict[str, Any]]] = None
-    ) -> ProviderResponse:
-        """Отправить контекст в модель и вернуть нормализованный ответ.
-
-        Args:
-            context: Диалоговый контекст.
-            tools: Схемы инструментов в формате OpenAI Function.
-
-        Returns:
-            Объект :class:`ProviderResponse`.
-
-        Raises:
-            ProviderError: При сетевом сбое или ошибке HTTP.
-        """
-
-    @abc.abstractmethod
-    async def send_stream(
-        self, context: Context, tools: Optional[list[dict[str, Any]]] = None
-    ) -> AsyncIterator[str]:
-        """Отправить контекст и отдавать чанки текста по мере генерации.
-
-        Args:
-            context: Диалоговый контекст.
-            tools: Схемы инструментов в формате OpenAI Function.
-
-        Yields:
-            Фрагменты текста ответа модели.
-        """
-
-
-class OpenRouterProvider(Provider):
-    """Провайдер для OpenRouter (OpenAI-совместимый chat-completions API).
-
-    Args:
-        api_key: Ключ OpenRouter (обязателен).
-        model_name: Имя модели; по умолчанию ``openai/gpt-4o-mini``.
-        url: URL API; по умолчанию ``https://openrouter.ai/api/v1/chat/completions``.
-        timeout: Таймаут HTTP-запроса в секундах.
-        temperature: Температура генерации.
-        referer: Заголовок ``HTTP-Referer`` для аналитики OpenRouter.
-        title: Заголовок ``X-Title`` для аналитики OpenRouter.
-
-    Raises:
-        ConfigurationError: Если ``api_key`` пуст.
-    """
-
-    DEFAULT_URL = "https://openrouter.ai/api/v1/chat/completions"
-    DEFAULT_MODEL = "openrouter/auto"
-    DEFAULT_REFERER = "https://baylang.com/"
-    DEFAULT_TITLE = "BayLang AI"
-
-    def __init__(
-        self,
-        api_key: str = "",
-        model_name: str = DEFAULT_MODEL,
-        *,
-        url: str = DEFAULT_URL,
-        timeout: float = 60.0,
-        temperature: float = 0.7,
-        referer: str = DEFAULT_REFERER,
-        title: str = DEFAULT_TITLE,
-    ) -> None:
-        super().__init__(
-            model_name=model_name or self.DEFAULT_MODEL,
-            api_key=api_key,
-            timeout=timeout,
-            temperature=temperature,
-        )
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise ConfigurationError("Для OpenRouterProvider требуется непустой api_key")
-        self._url = url or self.DEFAULT_URL
-        self.referer = referer
-        self.title = title
-        self._client: Optional[httpx.AsyncClient] = None
-
-    def get_url(self) -> str:
-        """Вернуть URL chat-completions эндпоинта OpenRouter."""
-        return self._url
-
-    def get_model_name(self) -> str:
-        """Вернуть имя модели OpenRouter."""
-        return self.model_name
-
-    def get_api_key(self) -> str:
-        """Вернуть API-ключ OpenRouter."""
-        return self.api_key
-
-    def _build_headers(self) -> dict[str, str]:
-        """Собрать HTTP-заголовки запроса (ключ API не логируется)."""
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": self.referer,
-            "X-Title": self.title,
-        }
-
-    def _build_payload(
-        self,
-        context: Context,
-        tools: Optional[list[dict[str, Any]]] = None,
-        stream: bool = False,
-        cache_control: bool = True,
-    ) -> dict[str, Any]:
-        """Собрать тело запроса в формате OpenAI chat-completions.
-
-        Если ``cache_control`` включён (по умолчанию), к последнему сообщению
-        добавляется блок ``cache_control: {"type": "ephemeral"}``. Такая
-        подсказка включает prompt caching у провайдеров, поддерживающих его
-        (например, Anthropic через OpenRouter): кешируется префикс диалога,
-        что ускоряет повторные запросы и снижает стоимость токенов.
-        """
-        messages = context.get_data()
-        for message in messages:
-            message["cache_control"] = {"type": "ephemeral"}
-        payload: dict[str, Any] = {
-            "cache_control": {"type": "ephemeral"},
-            "model": self.get_model_name(),
-            "messages": messages,
-            "temperature": self.temperature,
-            "stream": stream,
-        }
-        if tools:
-            payload["tools"] = tools
-        return payload
-
     def _parse_response(self, raw: dict[str, Any]) -> ProviderResponse:
         """Нормализовать сырой ответ API в объект ProviderResponse.
 
@@ -895,6 +768,102 @@ class OpenRouterProvider(Provider):
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
         self._client = None
+
+
+class OpenRouterProvider(Provider):
+    """Провайдер для OpenRouter (OpenAI-совместимый chat-completions API).
+
+    Args:
+        api_key: Ключ OpenRouter (обязателен).
+        model_name: Имя модели; по умолчанию ``openai/gpt-4o-mini``.
+        url: URL API; по умолчанию ``https://openrouter.ai/api/v1/chat/completions``.
+        timeout: Таймаут HTTP-запроса в секундах.
+        temperature: Температура генерации.
+        referer: Заголовок ``HTTP-Referer`` для аналитики OpenRouter.
+        title: Заголовок ``X-Title`` для аналитики OpenRouter.
+
+    Raises:
+        ConfigurationError: Если ``api_key`` пуст.
+    """
+
+    DEFAULT_URL = "https://openrouter.ai/api/v1/chat/completions"
+    DEFAULT_MODEL = "openrouter/auto"
+    DEFAULT_REFERER = "https://baylang.com/"
+    DEFAULT_TITLE = "BayLang AI"
+
+    def __init__(
+        self,
+        api_key: str = "",
+        model_name: str = DEFAULT_MODEL,
+        *,
+        url: str = DEFAULT_URL,
+        timeout: float = 60.0,
+        temperature: float = 0.7,
+        referer: str = DEFAULT_REFERER,
+        title: str = DEFAULT_TITLE,
+    ) -> None:
+        super().__init__(
+            model_name=model_name or self.DEFAULT_MODEL,
+            api_key=api_key,
+            timeout=timeout,
+            temperature=temperature,
+        )
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ConfigurationError("Для OpenRouterProvider требуется непустой api_key")
+        self._url = url or self.DEFAULT_URL
+        self.referer = referer
+        self.title = title
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def get_url(self) -> str:
+        """Вернуть URL chat-completions эндпоинта OpenRouter."""
+        return self._url
+
+    def get_model_name(self) -> str:
+        """Вернуть имя модели OpenRouter."""
+        return self.model_name
+
+    def get_api_key(self) -> str:
+        """Вернуть API-ключ OpenRouter."""
+        return self.api_key
+
+    def _build_headers(self) -> dict[str, str]:
+        """Собрать HTTP-заголовки запроса (ключ API не логируется)."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": self.referer,
+            "X-Title": self.title,
+        }
+
+    def _build_payload(
+        self,
+        context: Context,
+        tools: Optional[list[dict[str, Any]]] = None,
+        stream: bool = False,
+        cache_control: bool = True,
+    ) -> dict[str, Any]:
+        """Собрать тело запроса в формате OpenAI chat-completions.
+
+        Если ``cache_control`` включён (по умолчанию), к последнему сообщению
+        добавляется блок ``cache_control: {"type": "ephemeral"}``. Такая
+        подсказка включает prompt caching у провайдеров, поддерживающих его
+        (например, Anthropic через OpenRouter): кешируется префикс диалога,
+        что ускоряет повторные запросы и снижает стоимость токенов.
+        """
+        messages = context.get_data()
+        for message in messages:
+            message["cache_control"] = {"type": "ephemeral"}
+        payload: dict[str, Any] = {
+            "cache_control": {"type": "ephemeral"},
+            "model": self.get_model_name(),
+            "messages": messages,
+            "temperature": self.temperature,
+            "stream": stream,
+        }
+        if tools:
+            payload["tools"] = tools
+        return payload
 
     def __repr__(self) -> str:
         return f"OpenRouterProvider(model={self.get_model_name()!r}, url={self.get_url()!r})"

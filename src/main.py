@@ -68,7 +68,7 @@ __all__ = [
 
 APP_NAME = "BayLang AI"
 APP_VERSION = "0.2.0"
-DEFAULT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_MODEL = "openrouter/auto"
 ENV_API_KEY = "OPENROUTER_API_KEY"
 ENV_MODEL = "OPENROUTER_MODEL"
 
