@@ -17,8 +17,8 @@
 #
 set -euo pipefail
 
-IMAGE_NAME="${IMAGE_NAME:-baylang-ai}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="bayrell/baylang-ai-command"
+IMAGE_TAG="1.0.0"
 
 usage() {
     cat <<EOF

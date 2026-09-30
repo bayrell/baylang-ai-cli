@@ -660,8 +660,8 @@ class OpenRouterProvider(Provider):
     """
 
     DEFAULT_URL = "https://openrouter.ai/api/v1/chat/completions"
-    DEFAULT_MODEL = "openai/gpt-4o-mini"
-    DEFAULT_REFERER = "https://github.com/baylang/baylang-ai"
+    DEFAULT_MODEL = "openrouter/auto"
+    DEFAULT_REFERER = "https://baylang.com/"
     DEFAULT_TITLE = "BayLang AI"
 
     def __init__(
@@ -725,11 +725,10 @@ class OpenRouterProvider(Provider):
         что ускоряет повторные запросы и снижает стоимость токенов.
         """
         messages = context.get_data()
-        if cache_control and messages:
-            last_message = dict(messages[-1])
-            last_message["cache_control"] = {"type": "ephemeral"}
-            messages[-1] = last_message
+        for message in messages:
+            message["cache_control"] = {"type": "ephemeral"}
         payload: dict[str, Any] = {
+            "cache_control": {"type": "ephemeral"},
             "model": self.get_model_name(),
             "messages": messages,
             "temperature": self.temperature,
@@ -1129,31 +1128,18 @@ class Agent:
         self,
         provider: Provider,
         tools: Optional[ToolRegistry] = None,
-        max_iters: int = 5,
-        fallback_provider: Optional[Provider] = None,
-        system_prompt: str = "",
-        max_context_messages: int = 100,
+        max_iters: int = 100,
+        max_context_messages: Optional[int] = None,
     ) -> None:
         if max_iters < 1:
             raise ConfigurationError("max_iters должен быть не меньше 1")
         self.provider = provider
         self.tools = tools if tools is not None else ToolRegistry()
         self.max_iters = max_iters
-        self.fallback_provider = fallback_provider
-        self.system_prompt = system_prompt
         self.context = Context(max_messages=max_context_messages)
         self.last_response: Optional[ProviderResponse] = None
 
-    def _ensure_system_prompt(self, ctx: Context) -> None:
-        """Добавить системный промпт в начало контекста (если задан)."""
-        if not self.system_prompt:
-            return
-        data = ctx.get_data()
-        if data and data[0]["role"] == TextMessage.ROLE_SYSTEM:
-            return
-        ctx.add_message(TextMessage.system(self.system_prompt))
-
-    async def _send_with(self, provider: Provider, ctx: Context) -> str:
+    async def _send_with(self) -> str:
         """Основной цикл ReAct с указанным провайдером.
 
         Args:
@@ -1168,20 +1154,20 @@ class Agent:
                 не вернула финальный ответ за ``max_iters`` итераций.
         """
         schemas = self.tools.get_schemas() if len(self.tools) > 0 else None
-        snapshot = len(ctx)
+        snapshot = len(self.context)
 
         for _ in range(self.max_iters):
             try:
-                response = await provider.send(ctx, tools=schemas)
+                response = await self.provider.send(self.context, tools=schemas)
             except ProviderError:
-                ctx.truncate(snapshot)
+                self.context.truncate(snapshot)
                 raise
             self.last_response = response
 
             if response.tools:
-                ctx.add_message(ToolsMessage(response.text, response.tools))
+                self.context.add_message(ToolsMessage(response.text, response.tools))
                 for tool in response.tools:
-                    name, arguments, tool_id = _parse_tool(tool, len(ctx))
+                    name, arguments, tool_id = _parse_tool(tool, len(self.context))
                     try:
                         result = await self.tools.execute(name, arguments)
                         result_text = (
@@ -1192,20 +1178,20 @@ class Agent:
                     except ToolError as exc:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
-                    ctx.add_message(ToolResultMessage(result_text, tool_id=tool_id))
+                    self.context.add_message(ToolResultMessage(result_text, tool_id=tool_id))
                 continue
 
             text = response.text
             if not text.strip():
-                ctx.truncate(snapshot)
+                self.context.truncate(snapshot)
                 raise ProviderError("Модель вернула пустой текст ответа")
-            ctx.add_message(TextMessage.assistant(text))
+            self.context.add_message(TextMessage.assistant(text))
             return text
 
-        ctx.truncate(snapshot)
+        self.context.truncate(snapshot)
         raise ProviderError(f"Модель не вернула финальный ответ за {self.max_iters} итераций")
 
-    async def send(self, context: Optional[Context] = None) -> str:
+    async def send(self) -> str:
         """Отправить запрос через основной провайдер.
 
         Args:
@@ -1218,47 +1204,7 @@ class Agent:
         Raises:
             ProviderError: При ошибке провайдера или исчерпании итераций.
         """
-        ctx = context if context is not None else self.context
-        self._ensure_system_prompt(ctx)
-        return await self._send_with(self.provider, ctx)
-
-    async def send_with_fallback(self, context: Optional[Context] = None) -> str:
-        """Отправить запрос через основной провайдер с переходом на резервный.
-
-        При ``ProviderError`` основного провайдера контекст откатывается
-        к состоянию до запроса, и запрос повторяется через резервный
-        провайдер (если задан). Если резервный тоже завершился ошибкой,
-        бросается :class:`ProviderError` с описанием обоих сбоев.
-
-        Args:
-            context: Диалоговый контекст; по умолчанию — внутренний контекст
-                агента.
-
-        Returns:
-            Текст финального ответа модели.
-
-        Raises:
-            ProviderError: Если оба провайдера завершились ошибкой.
-        """
-        ctx = context if context is not None else self.context
-        self._ensure_system_prompt(ctx)
-        snapshot = len(ctx)
-        try:
-            return await self._send_with(self.provider, ctx)
-        except ProviderError as primary_exc:
-            if self.fallback_provider is None:
-                raise
-            logger.warning(
-                "Основной провайдер завершился ошибкой: %s; пробуем резервный", primary_exc
-            )
-            ctx.truncate(snapshot)
-            try:
-                return await self._send_with(self.fallback_provider, ctx)
-            except ProviderError as fallback_exc:
-                raise ProviderError(
-                    f"Оба провайдера завершились ошибкой. "
-                    f"Основной: {primary_exc}. Резервный: {fallback_exc}"
-                ) from fallback_exc
+        return await self._send_with()
 
     def reset(self) -> None:
         """Очистить контекст и внутреннее состояние для новой сессии."""
