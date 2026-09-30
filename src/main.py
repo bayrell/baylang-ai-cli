@@ -18,13 +18,15 @@
 
 * ``prompt.txt`` — системный промпт (создаётся с промптом по умолчанию,
   если файла нет; путь можно переопределить через ``--prompt-file``);
-* ``history/`` — сохранённые истории диалогов (JSON, имя по умолчанию —
-  метка времени, например ``20250101_120000.json``).
+* ``history/`` — сохранённые истории диалогов (JSON pretty, имя файла —
+  метка времени сессии, например ``20250101_120000.json``).
 
-При запуске история всегда чистая; загрузить сохранённую историю можно
-флагом ``--history <имя>`` или командой ``load <имя>`` в интерактивном
-режиме. Список последних историй выводится командой ``histories`` или
-флагом ``--list-histories``.
+По умолчанию всегда запускается **новая сессия**; сохранённую историю
+можно подхватить флагом ``--history <имя>`` или командой ``load <имя>``
+в интерактивном режиме. История сохраняется автоматически и всегда:
+после каждого ответа модели и ещё раз при завершении работы. Список
+последних историй выводится командой ``histories`` или флагом
+``--list-histories``.
 
 Коды возврата: ``0`` — успех, ``1`` — ошибка выполнения,
 ``2`` — ошибка конфигурации.
@@ -58,7 +60,6 @@ from ai import (  # type: ignore[no-redef]
 __all__ = [
     "build_agent",
     "run_interactive",
-    "run_once",
     "parse_args",
     "main",
     "mask_api_key",
@@ -98,16 +99,15 @@ HELP_TEXT = """\
   help                — показать эту справку
   clear               — очистить контекст диалога
   model <имя>         — сменить модель на лету (например: model openai/gpt-4o-mini)
-  save [имя]          — сохранить историю (имя по умолчанию — метка времени)
+  save [имя]          — сохранить историю под другим именем (по умолчанию — метка времени)
   load <имя>          — загрузить историю из ~/.baylang/history
   histories           — список последних историй
   exit, quit          — завершить работу (также Ctrl+C и Ctrl+D)
 Любая другая строка отправляется модели как запрос.
+История сессии сохраняется автоматически после каждого ответа и при выходе.
 Файл промпта: ~/.baylang/prompt.txt; история: ~/.baylang/history/."""
 
 logger = logging.getLogger(__name__)
-
-_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +172,15 @@ def _normalize_history_name(name: str) -> str:
     return name
 
 
+def new_session_name() -> str:
+    """Вернуть метку времени для имени файла истории текущей сессии.
+
+    Returns:
+        Строка вида ``YYYYMMDD_HHMMSS`` (timestamp).
+    """
+    return str(round(datetime.now().timestamp()))
+
+
 def list_histories(limit: int = HISTORY_LIST_LIMIT) -> list[Path]:
     """Вернуть пути к последним файлам истории (новые — первыми).
 
@@ -190,7 +199,7 @@ def list_histories(limit: int = HISTORY_LIST_LIMIT) -> list[Path]:
 
 
 def save_history(agent: Agent, name: Optional[str] = None) -> Path:
-    """Сохранить текущий контекст агента в файл истории.
+    """Сохранить текущий контекст агента в файл истории (JSON pretty).
 
     Args:
         agent: Агент, чей контекст сохраняется.
@@ -208,10 +217,31 @@ def save_history(agent: Agent, name: Optional[str] = None) -> Path:
     if name:
         filename = _normalize_history_name(name)
     else:
-        filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
+        filename = new_session_name() + ".json"
     path = HISTORY_DIR / filename
     path.write_text(agent.context.to_json(indent=2), encoding="utf-8")
     return path
+
+
+def autosave_history(agent: Agent, name: Optional[str] = None) -> Optional[Path]:
+    """Сохранить историю сессии, не прерывая работу при ошибке.
+
+    Используется для автоматического сохранения после каждого ответа
+    модели: сбой записи не должен ронять диалог.
+
+    Args:
+        agent: Агент, чей контекст сохраняется.
+        name: Имя истории (метка времени сессии); ``None`` — новая
+            метка времени.
+
+    Returns:
+        Путь к файлу истории или ``None``, если запись не удалась.
+    """
+    try:
+        return save_history(agent, name=name)
+    except (OSError, ValueError) as exc:
+        logger.warning("Не удалось сохранить историю: %s", exc)
+        return None
 
 
 def load_history(agent: Agent, name: str) -> int:
@@ -287,13 +317,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         metavar="ИМЯ",
         help=(
             "загрузить сохранённую историю из ~/.baylang/history/<имя>.json "
-            "перед стартом (по умолчанию — чистая история)"
+            "перед стартом (по умолчанию — новая сессия с чистой историей)"
         ),
-    )
-    parser.add_argument(
-        "--save",
-        action="store_true",
-        help="сохранить историю при завершении (имя — метка времени)",
     )
     parser.add_argument(
         "--list-histories",
@@ -398,15 +423,6 @@ def build_agent(args: argparse.Namespace) -> Agent:
 # ---------------------------------------------------------------------------
 
 
-def _get_loop() -> asyncio.AbstractEventLoop:
-    """Вернуть (или создать) долгоживущий event loop приложения."""
-    global _LOOP
-    if _LOOP is None or _LOOP.is_closed():
-        _LOOP = asyncio.new_event_loop()
-        asyncio.set_event_loop(_LOOP)
-    return _LOOP
-
-
 def _usage_suffix(agent: Agent) -> str:
     """Собрать суффикс статистики (токены) для verbose-вывода.
 
@@ -433,7 +449,7 @@ def _should_retry(exc: ProviderError) -> bool:
     return exc.status_code is None or exc.status_code >= 500
 
 
-def _send_with_retry(agent: Agent, prompt_text: str, attempts: int = 2) -> str:
+async def _send_with_retry(agent: Agent, prompt_text: str, attempts: int = 2) -> str:
     """Отправить реплику пользователя с одной повторной попыткой при сбое.
 
     Args:
@@ -449,10 +465,9 @@ def _send_with_retry(agent: Agent, prompt_text: str, attempts: int = 2) -> str:
     """
     agent.context.add_message(TextMessage.user(prompt_text))
     last_exc: Optional[ProviderError] = None
-    loop = _get_loop()
     for attempt in range(1, attempts + 1):
         try:
-            return loop.run_until_complete(agent.send())
+            return await agent.send()
         except ProviderError as exc:
             last_exc = exc
             if attempt >= attempts or not _should_retry(exc):
@@ -464,47 +479,34 @@ def _send_with_retry(agent: Agent, prompt_text: str, attempts: int = 2) -> str:
     raise last_exc
 
 
-def run_once(agent: Agent, prompt: str, args: argparse.Namespace) -> str:
-    """Выполнить одноразовый запрос (режим ``--prompt``).
-
-    Args:
-        agent: Агент.
-        prompt: Текст запроса пользователя.
-        args: Аргументы командной строки.
-
-    Returns:
-        Текст ответа модели; печать выполняется вызывающим кодом.
-    """
-    started = time.perf_counter()
-    text = _send_with_retry(agent, prompt)
-    elapsed = time.perf_counter() - started
-    if args.verbose:
-        print(
-            f"[verbose] время ответа: {elapsed:.2f} с{_usage_suffix(agent)}",
-            file=sys.stderr,
-        )
-    return text
-
-
-def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
+async def run_interactive(
+    agent: Agent,
+    args: argparse.Namespace,
+    history_name: Optional[str] = None,
+) -> int:
     """Интерактивный режим: цикл чтения строк со стандартного ввода.
 
     Команды: ``help``, ``clear``, ``model <имя>``, ``save [имя]``,
     ``load <имя>``, ``histories``, ``exit``/``quit``. Ошибки API не роняют
-    приложение: сообщение выводится, диалог продолжается.
+    приложение: сообщение выводится, диалог продолжается. После каждого
+    ответа модели история сессии автоматически сохраняется в JSON pretty
+    с именем ``<history_name>.json`` (метка времени сессии).
 
     Args:
         agent: Агент.
         args: Аргументы командной строки.
+        history_name: Метка времени файла истории сессии; ``None`` —
+            будет создана при первом автосохранении.
 
     Returns:
         Код выхода (0 — корректное завершение).
     """
+    if history_name is None:
+        history_name = new_session_name()
     print(
         f"{APP_NAME} {APP_VERSION}. Справка: help; история: histories/save/load; "
         "очистка контекста: clear; выход: exit."
     )
-    loop = _get_loop()
     while True:
         try:
             line = input("you> ")
@@ -559,14 +561,14 @@ def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
                 continue
             print(f"История загружена: {count} сообщений.")
             continue
-        if command == "histories":
+        if command == "histories" or command == "list":
             print_histories()
             continue
 
         started = time.perf_counter()
         agent.context.add_message(TextMessage.user(line))
         try:
-            text = loop.run_until_complete(agent.send())
+            text = await agent.send()
         except ProviderError as exc:
             print(f"assistant> Ошибка запроса: {exc}")
             print("Проверьте сеть и API-ключ, затем попробуйте ещё раз.")
@@ -577,7 +579,11 @@ def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
         elapsed = time.perf_counter() - started
         print(f"assistant> {text}")
         if args.verbose:
-            print(f"[verbose] время ответа: {elapsed:.2f} с{_usage_suffix(agent)}")
+            print(
+                f"[verbose] время ответа: {elapsed:.2f} с{_usage_suffix(agent)}",
+                file=sys.stderr,
+            )
+        autosave_history(agent, history_name)
 
 
 # ---------------------------------------------------------------------------
@@ -585,24 +591,102 @@ def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _shutdown(agent: Agent, loop: asyncio.AbstractEventLoop) -> None:
-    """Закрыть HTTP-клиент провайдера и event loop (не должен падать)."""
+async def _shutdown(agent: Agent) -> None:
+    """Закрыть HTTP-клиент провайдера (не должен падать)."""
     provider = agent.provider
     aclose = getattr(provider, "aclose", None)
     if aclose is not None:
         try:
-            loop.run_until_complete(aclose())
+            await aclose()
         except Exception:  # noqa: BLE001 — очистка не должна ронять программу
             logger.debug("Не удалось закрыть HTTP-клиент провайдера", exc_info=True)
-    if not loop.is_closed():
-        loop.close()
+
+
+async def _run_app(args: argparse.Namespace) -> int:
+    """Выполнить приложение: сборка агента, режим работы, автосохранение.
+
+    По умолчанию стартует новая сессия; старая история загружается только
+    по ``--history`` или команде ``load``. История сохраняется всегда:
+    автоматически после каждого ответа и ещё раз в блоке ``finally``
+    при завершении (имя файла — метка времени сессии, формат JSON pretty).
+
+    Args:
+        args: Аргументы командной строки.
+
+    Returns:
+        Код выхода процесса: ``0`` — успех, ``1`` — ошибка выполнения,
+        ``2`` — ошибка конфигурации.
+    """
+    try:
+        agent = build_agent(args)
+    except ConfigurationError as exc:
+        print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    except BayLangError as exc:
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+
+    session_name = new_session_name()
+
+    if args.history:
+        try:
+            count = load_history(agent, args.history)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Ошибка загрузки истории: {exc}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+        print(
+            f"Загружена история '{args.history}': {count} сообщений.",
+            file=sys.stderr,
+        )
+
+    if args.verbose:
+        api_key = os.environ.get(ENV_API_KEY, "")
+        logger.debug(
+            "Модель: %s; ключ API: %s; промпт: %s; сессия: %s",
+            agent.provider.get_model_name(),
+            mask_api_key(api_key),
+            DEFAULT_PROMPT_FILE,
+            session_name,
+        )
+
+    exit_code = EXIT_OK
+    try:
+        if args.prompt:
+            started = time.perf_counter()
+            text = await _send_with_retry(agent, args.prompt)
+            print(text)
+            if args.verbose:
+                print(
+                    f"[verbose] время ответа: {time.perf_counter() - started:.2f} "
+                    f"с{_usage_suffix(agent)}",
+                    file=sys.stderr,
+                )
+        else:
+            exit_code = await run_interactive(agent, args, history_name=session_name)
+    except KeyboardInterrupt:
+        print("\nДо встречи! 👋")
+        exit_code = EXIT_OK
+    except ProviderError as exc:
+        print(f"Ошибка выполнения: {exc}", file=sys.stderr)
+        exit_code = EXIT_RUNTIME_ERROR
+    except BayLangError as exc:
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        exit_code = EXIT_RUNTIME_ERROR
+    finally:
+        # История сохраняется всегда — при любом способе завершения.
+        try:
+            save_history(agent, name=session_name)
+        except (OSError, ValueError) as exc:
+            print(f"Не удалось сохранить историю: {exc}", file=sys.stderr)
+        await _shutdown(agent)
+    return exit_code
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Оркестратор приложения: парсинг аргументов, сборка агента, режим работы.
+    """Оркестратор приложения: парсинг аргументов и запуск async-ядра.
 
-    История по умолчанию чистая; загрузка выполняется по ``--history``,
-    сохранение по ``--save`` или команде ``save`` в интерактивном режиме.
+    Новая сессия стартует по умолчанию; история диалога сохраняется
+    автоматически и всегда (имя файла — метка времени, JSON pretty).
 
     Args:
         argv: Аргументы командной строки; ``None`` — ``sys.argv[1:]``.
@@ -624,58 +708,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_OK
 
     try:
-        agent = build_agent(args)
-    except ConfigurationError as exc:
-        print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
-        return EXIT_CONFIG_ERROR
-    except BayLangError as exc:
-        print(f"Ошибка: {exc}", file=sys.stderr)
-        return EXIT_CONFIG_ERROR
-
-    if args.history:
-        try:
-            count = load_history(agent, args.history)
-        except (FileNotFoundError, ValueError) as exc:
-            print(f"Ошибка загрузки истории: {exc}", file=sys.stderr)
-            return EXIT_CONFIG_ERROR
-        print(
-            f"Загружена история '{args.history}': {count} сообщений.",
-            file=sys.stderr,
-        )
-
-    if args.verbose:
-        api_key = os.environ.get(ENV_API_KEY, "")
-        logger.debug(
-            "Модель: %s; ключ API: %s; промпт: %s",
-            agent.provider.get_model_name(),
-            mask_api_key(api_key),
-            DEFAULT_PROMPT_FILE,
-        )
-
-    loop = _get_loop()
-    try:
-        if args.prompt:
-            text = run_once(agent, args.prompt, args)
-            print(text)
-            return EXIT_OK
-        return run_interactive(agent, args)
+        return asyncio.run(_run_app(args))
     except KeyboardInterrupt:
         print("\nДо встречи! 👋")
         return EXIT_OK
-    except ProviderError as exc:
-        print(f"Ошибка выполнения: {exc}", file=sys.stderr)
-        return EXIT_RUNTIME_ERROR
-    except BayLangError as exc:
-        print(f"Ошибка: {exc}", file=sys.stderr)
-        return EXIT_RUNTIME_ERROR
-    finally:
-        if args.save:
-            try:
-                path = save_history(agent, name=None)
-                print(f"История сохранена: {path}", file=sys.stderr)
-            except (OSError, ValueError) as exc:
-                print(f"Не удалось сохранить историю: {exc}", file=sys.stderr)
-        _shutdown(agent, loop)
 
 
 if __name__ == "__main__":
