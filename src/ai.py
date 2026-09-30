@@ -196,7 +196,7 @@ class TextMessage:
         return TextMessage(role, content, tool_id=data.get("tool_id"), tools=data.get("tools"))
 
     @staticmethod
-    def _infer_type(data: dict[str, Any]) -> str:
+    def infer_type(data: dict[str, Any]) -> str:
         """Определить тип сообщения по роли и наличию ``tools`` (legacy JSON)."""
         if data.get("role") == TextMessage.ROLE_TOOL:
             return ToolResultMessage.MESSAGE_TYPE
@@ -396,8 +396,8 @@ class Context:
     def __init__(self, max_messages: Optional[int] = None) -> None:
         if max_messages is not None and max_messages < 1:
             raise ValueError("max_messages должен быть не меньше 1")
-        self._items: list[TextMessage] = []
-        self._max_messages = max_messages
+        self.items: list[TextMessage] = []
+        self.max_messages = max_messages
 
     def add_message(self, message: TextMessage) -> None:
         """Добавить сообщение в конец контекста.
@@ -410,9 +410,9 @@ class Context:
         """
         if not isinstance(message, TextMessage):
             raise TypeError("В контекст можно добавлять только объекты TextMessage")
-        self._items.append(message)
-        if self._max_messages is not None and len(self._items) > self._max_messages:
-            self.trim(self._max_messages)
+        self.items.append(message)
+        if self.max_messages is not None and len(self.items) > self.max_messages:
+            self.trim(self.max_messages)
 
     def get_data(self) -> list[dict[str, Any]]:
         """Получить список сообщений в формате провайдера.
@@ -421,7 +421,7 @@ class Context:
             Список словарей ``{"role": ..., "content": ...}``, готовых
             к передаче в поле ``"messages"`` запроса к LLM.
         """
-        return [item.get_data() for item in self._items]
+        return [item.get_data() for item in self.items]
 
     def to_dict(self) -> list[dict[str, Any]]:
         """Сериализовать контекст в список словарей (для сохранения в JSON).
@@ -429,7 +429,7 @@ class Context:
         Returns:
             Список словарей с полем ``type`` у каждого сообщения.
         """
-        return [item.to_dict() for item in self._items]
+        return [item.to_dict() for item in self.items]
 
     def to_json(self, indent: Optional[int] = None) -> str:
         """Сериализовать контекст в JSON-строку.
@@ -505,8 +505,8 @@ class Context:
         """
         if max_messages < 0:
             raise ValueError("max_messages не может быть отрицательным")
-        if len(self._items) > max_messages:
-            del self._items[:-max_messages]
+        if len(self.items) > max_messages:
+            del self.items[:-max_messages]
 
     def truncate(self, size: int) -> None:
         """Оставить только первые ``size`` сообщений.
@@ -521,12 +521,12 @@ class Context:
         """
         if size < 0:
             raise ValueError("size не может быть отрицательным")
-        if len(self._items) > size:
-            del self._items[size:]
+        if len(self.items) > size:
+            del self.items[size:]
 
     def clear(self) -> None:
         """Полностью очистить контекст."""
-        self._items.clear()
+        self.items.clear()
 
     def last_response(self) -> Optional[TextMessage]:
         """Вернуть последнее сообщение роли ``assistant``.
@@ -534,21 +534,21 @@ class Context:
         Returns:
             Сообщение ассистента или ``None``, если ответов ещё не было.
         """
-        for item in reversed(self._items):
+        for item in reversed(self.items):
             if item.role == TextMessage.ROLE_AI:
                 return item
         return None
 
     def __iter__(self):
         """Итерировать по копии списка сообщений."""
-        return iter(list(self._items))
+        return iter(list(self.items))
 
     def __len__(self) -> int:
         """Вернуть количество сообщений в контексте."""
-        return len(self._items)
+        return len(self.items)
 
     def __repr__(self) -> str:
-        return f"Context(messages={len(self._items)})"
+        return f"Context(messages={len(self.items)})"
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +614,7 @@ class Provider(abc.ABC):
     def get_api_key(self) -> str:
         """Вернуть API-ключ провайдера."""
 
-    def _parse_response(self, raw: dict[str, Any]) -> ProviderResponse:
+    def parse_response(self, raw: dict[str, Any]) -> ProviderResponse:
         """Нормализовать сырой ответ API в объект ProviderResponse.
 
         Raises:
@@ -640,23 +640,23 @@ class Provider(abc.ABC):
             tools=tools if isinstance(tools, list) else [],
         )
 
-    def _get_client(self) -> httpx.AsyncClient:
+    def get_client(self) -> httpx.AsyncClient:
         """Вернуть (или создать) переиспользуемый асинхронный HTTP-клиент."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout))
-        return self._client
+        if self.client is None or self.client.is_closed:
+            self.client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout))
+        return self.client
 
-    async def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Выполнить POST-запрос и вернуть разобранный JSON-ответ.
 
         Raises:
             ProviderError: При таймауте, сетевой ошибке, HTTP 4xx/5xx
                 или некорректном теле ответа.
         """
-        client = self._get_client()
+        client = self.get_client()
         try:
             response = await client.post(
-                self.get_url(), headers=self._build_headers(), json=payload
+                self.get_url(), headers=self.build_headers(), json=payload
             )
         except httpx.TimeoutException as exc:
             raise ProviderError(
@@ -706,9 +706,9 @@ class Provider(abc.ABC):
         while count < self.fallback_iters:
             count += 1
             try:
-                payload = self._build_payload(context, tools=tools, stream=False)
-                raw = await self._post_json(payload)
-                return self._parse_response(raw)
+                payload = self.build_payload(context, tools=tools, stream=False)
+                raw = await self.post_json(payload)
+                return self.parse_response(raw)
             except ProviderError:
                 await asyncio.sleep(self.delay)
                 continue
@@ -730,11 +730,11 @@ class Provider(abc.ABC):
         Raises:
             ProviderError: При таймауте, сетевой ошибке или HTTP 4xx/5xx.
         """
-        payload = self._build_payload(context, tools=tools, stream=True)
-        client = self._get_client()
+        payload = self.build_payload(context, tools=tools, stream=True)
+        client = self.get_client()
         try:
             async with client.stream(
-                "POST", self.get_url(), headers=self._build_headers(), json=payload
+                "POST", self.get_url(), headers=self.build_headers(), json=payload
             ) as response:
                 if response.status_code >= 400:
                     body = (await response.aread()).decode("utf-8", errors="replace")[:1000]
@@ -775,9 +775,9 @@ class Provider(abc.ABC):
 
     async def aclose(self) -> None:
         """Закрыть HTTP-клиент и освободить соединения."""
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-        self._client = None
+        if self.client is not None and not self.client.is_closed:
+            await self.client.aclose()
+        self.client = None
 
 
 class OpenRouterProvider(Provider):
@@ -820,14 +820,14 @@ class OpenRouterProvider(Provider):
         )
         if not isinstance(api_key, str) or not api_key.strip():
             raise ConfigurationError("Для OpenRouterProvider требуется непустой api_key")
-        self._url = url or self.DEFAULT_URL
+        self.url = url or self.DEFAULT_URL
         self.referer = referer
         self.title = title
-        self._client: Optional[httpx.AsyncClient] = None
+        self.client: Optional[httpx.AsyncClient] = None
 
     def get_url(self) -> str:
         """Вернуть URL chat-completions эндпоинта OpenRouter."""
-        return self._url
+        return self.url
 
     def get_model_name(self) -> str:
         """Вернуть имя модели OpenRouter."""
@@ -837,7 +837,7 @@ class OpenRouterProvider(Provider):
         """Вернуть API-ключ OpenRouter."""
         return self.api_key
 
-    def _build_headers(self) -> dict[str, str]:
+    def build_headers(self) -> dict[str, str]:
         """Собрать HTTP-заголовки запроса (ключ API не логируется)."""
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -846,7 +846,7 @@ class OpenRouterProvider(Provider):
             "X-Title": self.title,
         }
 
-    def _build_payload(
+    def build_payload(
         self,
         context: Context,
         tools: Optional[list[dict[str, Any]]] = None,
@@ -985,7 +985,7 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
-        self._tools: dict[str, Tool] = {}
+        self.tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
         """Зарегистрировать инструмент.
@@ -1000,9 +1000,9 @@ class ToolRegistry:
         """
         if not isinstance(tool, Tool):
             raise TypeError("В реестр можно добавлять только объекты Tool")
-        if tool.name in self._tools:
+        if tool.name in self.tools:
             raise ConfigurationError(f"Инструмент {tool.name!r} уже зарегистрирован")
-        self._tools[tool.name] = tool
+        self.tools[tool.name] = tool
 
     def find(self, name: str) -> Optional[Tool]:
         """Найти инструмент по имени.
@@ -1010,7 +1010,7 @@ class ToolRegistry:
         Returns:
             Инструмент или ``None``, если не найден.
         """
-        return self._tools.get(name)
+        return self.tools.get(name)
 
     def get_schemas(self) -> list[dict[str, Any]]:
         """Вернуть схемы всех инструментов для передачи в запрос к модели.
@@ -1018,7 +1018,7 @@ class ToolRegistry:
         Returns:
             Список схем в формате OpenAI Function.
         """
-        return [tool.get_schema() for tool in self._tools.values()]
+        return [tool.get_schema() for tool in self.tools.values()]
 
     async def execute(self, name: str, params: Optional[dict[str, Any]] = None) -> Any:
         """Выполнить инструмент по имени.
@@ -1033,22 +1033,22 @@ class ToolRegistry:
         Raises:
             ToolError: Если инструмент не найден или завершился ошибкой.
         """
-        tool = self._tools.get(name)
+        tool = self.tools.get(name)
         if tool is None:
             raise ToolError(f"Инструмент {name!r} не найден в реестре", tool_name=name)
         return await tool.execute(params)
 
     def __len__(self) -> int:
-        return len(self._tools)
+        return len(self.tools)
 
     def __contains__(self, name: object) -> bool:
-        return name in self._tools
+        return name in self.tools
 
     def __iter__(self):
-        return iter(self._tools.values())
+        return iter(self.tools.values())
 
     def __repr__(self) -> str:
-        return f"ToolRegistry(tools={list(self._tools)})"
+        return f"ToolRegistry(tools={list(self.tools)})"
 
 
 # ---------------------------------------------------------------------------
@@ -1056,7 +1056,7 @@ class ToolRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _parse_tool(tool: dict[str, Any], seq: int) -> tuple[str, dict[str, Any], str]:
+def parse_tool(tool: dict[str, Any], seq: int) -> tuple[str, dict[str, Any], str]:
     """Разобрать один tool из ответа модели.
 
     Args:
@@ -1119,7 +1119,7 @@ class Agent:
         self.last_response: Optional[ProviderResponse] = None
         self.delay = 5
 
-    async def _send_with(self) -> str:
+    async def send_with(self) -> str:
         """Основной цикл ReAct с указанным провайдером.
 
         Args:
@@ -1155,7 +1155,7 @@ class Agent:
                     ToolsMessage(response.text, response.tools)
                 )
                 for tool in response.tools:
-                    name, arguments, tool_id = _parse_tool(tool, len(self.context))
+                    name, arguments, tool_id = parse_tool(tool, len(self.context))
                     try:
                         result = await self.tools.execute(name, arguments)
                         result_text = (
@@ -1189,8 +1189,12 @@ class Agent:
         Raises:
             ProviderError: При ошибке провайдера или исчерпании итераций.
         """
-        return await self._send_with()
-
+        return await self.send_with()
+    
+    async def disconnect(self):
+        if self.provider:
+            await self.provider.aclose()
+    
     def reset(self) -> None:
         """Очистить контекст и внутреннее состояние для новой сессии."""
         self.context.clear()

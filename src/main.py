@@ -423,7 +423,7 @@ def build_agent(args: argparse.Namespace) -> Agent:
 # ---------------------------------------------------------------------------
 
 
-def _usage_suffix(agent: Agent) -> str:
+def usage_suffix(agent: Agent) -> str:
     """Собрать суффикс статистики (токены) для verbose-вывода.
 
     Returns:
@@ -438,45 +438,6 @@ def _usage_suffix(agent: Agent) -> str:
         if isinstance(value, int):
             parts.append(f"{label} tokens: {value}")
     return ("; " + "; ".join(parts)) if parts else ""
-
-
-def _should_retry(exc: ProviderError) -> bool:
-    """Определить, стоит ли повторять запрос после ошибки.
-
-    Повтор допускается при сетевых сбоях (``status_code is None``)
-    и серверных ошибках HTTP (5xx).
-    """
-    return exc.status_code is None or exc.status_code >= 500
-
-
-async def _send_with_retry(agent: Agent, prompt_text: str, attempts: int = 2) -> str:
-    """Отправить реплику пользователя с одной повторной попыткой при сбое.
-
-    Args:
-        agent: Агент.
-        prompt_text: Текст реплики пользователя.
-        attempts: Максимальное число попыток (по умолчанию 2).
-
-    Returns:
-        Текст финального ответа модели.
-
-    Raises:
-        ProviderError: Последняя попытка завершилась ошибкой.
-    """
-    agent.context.add_message(TextMessage.user(prompt_text))
-    last_exc: Optional[ProviderError] = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return await agent.send()
-        except ProviderError as exc:
-            last_exc = exc
-            if attempt >= attempts or not _should_retry(exc):
-                break
-            logger.warning(
-                "Попытка %d завершилась ошибкой (%s); повторяю запрос", attempt, exc
-            )
-    assert last_exc is not None
-    raise last_exc
 
 
 async def run_interactive(
@@ -580,29 +541,13 @@ async def run_interactive(
         print(f"assistant> {text}")
         if args.verbose:
             print(
-                f"[verbose] время ответа: {elapsed:.2f} с{_usage_suffix(agent)}",
+                f"[verbose] время ответа: {elapsed:.2f} с{usage_suffix(agent)}",
                 file=sys.stderr,
             )
         autosave_history(agent, history_name)
 
 
-# ---------------------------------------------------------------------------
-# Оркестратор
-# ---------------------------------------------------------------------------
-
-
-async def _shutdown(agent: Agent) -> None:
-    """Закрыть HTTP-клиент провайдера (не должен падать)."""
-    provider = agent.provider
-    aclose = getattr(provider, "aclose", None)
-    if aclose is not None:
-        try:
-            await aclose()
-        except Exception:  # noqa: BLE001 — очистка не должна ронять программу
-            logger.debug("Не удалось закрыть HTTP-клиент провайдера", exc_info=True)
-
-
-async def _run_app(args: argparse.Namespace) -> int:
+async def run_app(args: argparse.Namespace) -> int:
     """Выполнить приложение: сборка агента, режим работы, автосохранение.
 
     По умолчанию стартует новая сессия; старая история загружается только
@@ -658,7 +603,7 @@ async def _run_app(args: argparse.Namespace) -> int:
             if args.verbose:
                 print(
                     f"[verbose] время ответа: {time.perf_counter() - started:.2f} "
-                    f"с{_usage_suffix(agent)}",
+                    f"с{usage_suffix(agent)}",
                     file=sys.stderr,
                 )
         else:
@@ -678,7 +623,7 @@ async def _run_app(args: argparse.Namespace) -> int:
             save_history(agent, name=session_name)
         except (OSError, ValueError) as exc:
             print(f"Не удалось сохранить историю: {exc}", file=sys.stderr)
-        await _shutdown(agent)
+        await agent.disconnect()
     return exit_code
 
 
@@ -708,7 +653,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_OK
 
     try:
-        return asyncio.run(_run_app(args))
+        return asyncio.run(run_app(args))
     except KeyboardInterrupt:
         print("\nДо встречи! 👋")
         return EXIT_OK
