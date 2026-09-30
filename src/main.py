@@ -67,7 +67,7 @@ __all__ = [
 ]
 
 APP_NAME = "BayLang AI"
-APP_VERSION = "0.2.0"
+APP_VERSION = "1.0.0"
 DEFAULT_MODEL = "openrouter/auto"
 ENV_API_KEY = "OPENROUTER_API_KEY"
 ENV_MODEL = "OPENROUTER_MODEL"
@@ -128,8 +128,8 @@ def load_system_prompt(path: Optional[Path] = None) -> str:
     """Загрузить системный промпт из файла.
 
     По умолчанию читается ``~/.baylang/prompt.txt``. Если файл отсутствует
-    или пуст, возвращается промпт по умолчанию (:data:`SYSTEM_PROMPT`).
-
+    или пуст, возвращается промпт по умолчанию
+    
     Args:
         path: Путь к файлу промпта; ``None`` — путь по умолчанию.
 
@@ -378,12 +378,13 @@ def build_agent(args: argparse.Namespace) -> Agent:
         temperature=args.temperature,
     )
     registry = ToolRegistry()
-    return Agent(
+    agent = Agent(
         provider=provider,
         tools=registry,
         max_iters=args.max_iters,
-        system_prompt=system_prompt,
     )
+    agent.context.add_message(TextMessage.system(system_prompt))
+    return agent
 
 
 # ---------------------------------------------------------------------------
