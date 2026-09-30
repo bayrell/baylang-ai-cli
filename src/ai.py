@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import abc
 import inspect
 import json
@@ -598,6 +599,8 @@ class Provider(abc.ABC):
         self.api_key = api_key
         self.timeout = timeout
         self.temperature = temperature
+        self.fallback_iters = 100
+        self.delay = 5
 
     @abc.abstractmethod
     def get_url(self) -> str:
@@ -699,9 +702,16 @@ class Provider(abc.ABC):
         Raises:
             ProviderError: При сетевом сбое или ошибке HTTP.
         """
-        payload = self._build_payload(context, tools=tools, stream=False)
-        raw = await self._post_json(payload)
-        return self._parse_response(raw)
+        count = 0
+        while count < self.fallback_iters:
+            count += 1
+            try:
+                payload = self._build_payload(context, tools=tools, stream=False)
+                raw = await self._post_json(payload)
+                return self._parse_response(raw)
+            except ProviderError:
+                await asyncio.sleep(self.delay)
+                continue
 
     async def send_stream(
         self, context: Context, tools: Optional[list[dict[str, Any]]] = None
@@ -1107,6 +1117,7 @@ class Agent:
         self.max_iters = max_iters
         self.context = Context(max_messages=max_context_messages)
         self.last_response: Optional[ProviderResponse] = None
+        self.delay = 5
 
     async def _send_with(self) -> str:
         """Основной цикл ReAct с указанным провайдером.
@@ -1132,9 +1143,17 @@ class Agent:
                 self.context.truncate(snapshot)
                 raise
             self.last_response = response
-
+            
+            text = response.text.strip()
+            if text != "":
+                self.context.add_message(
+                    TextMessage.assistant(text)
+                )
+            
             if response.tools:
-                self.context.add_message(ToolsMessage(response.text, response.tools))
+                self.context.add_message(
+                    ToolsMessage(response.text, response.tools)
+                )
                 for tool in response.tools:
                     name, arguments, tool_id = _parse_tool(tool, len(self.context))
                     try:
@@ -1148,13 +1167,10 @@ class Agent:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
                     self.context.add_message(ToolResultMessage(result_text, tool_id=tool_id))
+                
+                await asyncio.sleep(self.delay)
                 continue
 
-            text = response.text
-            if not text.strip():
-                self.context.truncate(snapshot)
-                raise ProviderError("Модель вернула пустой текст ответа")
-            self.context.add_message(TextMessage.assistant(text))
             return text
 
         self.context.truncate(snapshot)

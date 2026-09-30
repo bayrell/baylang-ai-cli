@@ -15,12 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Исходники приложения
 COPY src/ ./src/
 
-# Конфигурация передаётся через переменные окружения:
-#   OPENROUTER_API_KEY — ключ OpenRouter (обязательна)
-#   OPENROUTER_MODEL   — модель (необязательна, по умолчанию openai/gpt-4o-mini)
-#
-# Промпт и история диалогов хранятся в /root/.baylang (монтируйте том для сохранности):
-#   docker run --rm -e OPENROUTER_API_KEY -v "$HOME/.baylang:/root/.baylang" baylang-ai
-
-ENTRYPOINT ["python", "-m", "src.main"]
-CMD ["--help"]
+CMD ["bash"]
