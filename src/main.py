@@ -21,7 +21,7 @@
 * ``history/`` — сохранённые истории диалогов (JSON pretty, имя файла —
   метка времени сессии, например ``20250101_120000.json``);
 * ``baylang.log`` — журнал работы приложения (с ротацией: до 3 бэкапов
-  по 1 МБ, сообщения начиная с DEBUG пишутся всегда, независимо от
+  по 1 МБ, в файл пишутся сообщения начиная с INFO, независимо от
   ``--verbose``; в консоль — WARNING, либо DEBUG при ``--verbose``).
 
 По умолчанию всегда запускается **новая сессия**; сохранённую историю
@@ -144,22 +144,15 @@ def ensure_app_dirs() -> None:
 def setup_logging(verbose: bool = False) -> Path:
     """Настроить логирование: консоль + файл журнала в домашней папке.
 
-    В ``~/.baylang/baylang.log`` пишутся **все** сообщения начиная с
-    уровня DEBUG — независимо от ``--verbose``; в консоль выводятся
-    WARNING и выше, либо DEBUG при ``--verbose``. Файл открывается в
-    режиме дополнения и ротируется (``LOG_MAX_BYTES`` × ``LOG_BACKUP_COUNT``),
-    чтобы журнал не разрастался бесконечно. Повторный вызов безопасен:
-    старые обработчики снимаются перед добавлением новых.
-
     Args:
-        verbose: ``True`` — дублировать DEBUG-сообщения в консоль.
+        verbose: ``True`` — дублировать DEBUG-сообщения в консоль и в файл.
 
     Returns:
         Путь к открытому файлу журнала (или к ``LOG_FILE``, если файл
         открыть не удалось — ошибка не прерывает работу приложения).
     """
     root = logging.getLogger()
-    root.setLevel(logging.WARNING)
+    root.setLevel(logging.DEBUG)
     for handler in list(root.handlers):
         root.removeHandler(handler)
         handler.close()
@@ -177,7 +170,7 @@ def setup_logging(verbose: bool = False) -> Path:
             backupCount=LOG_BACKUP_COUNT,
             encoding="utf-8",
         )
-        file_handler.setLevel(logging.WARNING)
+        file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
         file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
         root.addHandler(file_handler)
     except OSError as exc:
@@ -527,7 +520,7 @@ async def run_interactive(
     """
     if history_name is None:
         history_name = new_session_name()
-    logger.info("Интерактивный режим, сессия: %s", history_name)
+    logger.info("Сессия: %s", history_name)
     print(
         f"{APP_NAME} {APP_VERSION}. Справка: help; история: histories/save/load; "
         "очистка контекста: clear; выход: exit."
@@ -677,19 +670,7 @@ async def run_app(args: argparse.Namespace) -> int:
 
     exit_code = EXIT_OK
     try:
-        if args.prompt:
-            started = time.perf_counter()
-            logger.debug("Одноразовый запрос: %s", args.prompt)
-            text = await _send_with_retry(agent, args.prompt)
-            print(text)
-            if args.verbose:
-                print(
-                    f"[verbose] время ответа: {time.perf_counter() - started:.2f} "
-                    f"с{usage_suffix(agent)}",
-                    file=sys.stderr,
-                )
-        else:
-            exit_code = await run_interactive(agent, args, history_name=session_name)
+        exit_code = await run_interactive(agent, args, history_name=session_name)
     except KeyboardInterrupt:
         print("\nДо встречи! 👋")
         exit_code = EXIT_OK
@@ -717,7 +698,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     Новая сессия стартует по умолчанию; история диалога сохраняется
     автоматически и всегда (имя файла — метка времени, JSON pretty).
-    Журнал работы пишется в ``~/.baylang/baylang.log`` (ротация 1 МБ × 3).
+    Журнал работы пишется в ``~/.baylang/baylang.log`` (ротация 1 МБ × 3,
+    в файл попадают сообщения начиная с INFO).
 
     Args:
         argv: Аргументы командной строки; ``None`` — ``sys.argv[1:]``.
