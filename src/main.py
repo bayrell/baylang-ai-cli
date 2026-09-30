@@ -19,14 +19,17 @@
 * ``prompt.txt`` — системный промпт (создаётся с промптом по умолчанию,
   если файла нет; путь можно переопределить через ``--prompt-file``);
 * ``history/`` — сохранённые истории диалогов (JSON pretty, имя файла —
-  метка времени сессии, например ``20250101_120000.json``).
+  метка времени сессии, например ``20250101_120000.json``);
+* ``baylang.log`` — журнал работы приложения (с ротацией: до 3 бэкапов
+  по 1 МБ, сообщения начиная с DEBUG пишутся всегда, независимо от
+  ``--verbose``; в консоль — WARNING, либо DEBUG при ``--verbose``).
 
 По умолчанию всегда запускается **новая сессия**; сохранённую историю
-можно подхватить флагом ``--history <имя>`` или командой ``load <имя>``
-в интерактивном режиме. История сохраняется автоматически и всегда:
-после каждого ответа модели и ещё раз при завершении работы. Список
-последних историй выводится командой ``histories`` или флагом
-``--list-histories``.
+можно подхватить флагом ``--history <имя>`` (алиас ``--load <имя>``)
+или командой ``load <имя>`` в интерактивном режиме. История сохраняется
+автоматически и всегда: после каждого ответа модели и ещё раз при
+завершении работы. Список последних историй выводится командой
+``histories`` или флагом ``--list-histories``.
 
 Коды возврата: ``0`` — успех, ``1`` — ошибка выполнения,
 ``2`` — ошибка конфигурации.
@@ -40,6 +43,7 @@ import logging
 import os
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +68,7 @@ __all__ = [
     "main",
     "mask_api_key",
     "ensure_app_dirs",
+    "setup_logging",
     "load_system_prompt",
     "list_histories",
     "save_history",
@@ -83,11 +88,15 @@ EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_CONFIG_ERROR = 2
 
-# Домашняя папка приложения: промпт и истории диалогов.
+# Домашняя папка приложения: промпт, истории диалогов и журнал.
 APP_DIR = Path.home() / ".baylang"
 DEFAULT_PROMPT_FILE = APP_DIR / "prompt.txt"
 HISTORY_DIR = APP_DIR / "history"
 HISTORY_LIST_LIMIT = 10
+LOG_FILE = APP_DIR / "baylang.log"
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUP_COUNT = 3
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 SYSTEM_PROMPT = (
     "Ты — полезный ассистент BayLang AI. Отвечай кратко и по делу, "
@@ -100,18 +109,19 @@ HELP_TEXT = """\
   clear               — очистить контекст диалога
   model <имя>         — сменить модель на лету (например: model openai/gpt-4o-mini)
   save [имя]          — сохранить историю под другим именем (по умолчанию — метка времени)
-  load <имя>          — загрузить историю из ~/.baylang/history
+  load <имя>          — загрузить историю из ~/.baylang/history (флаг: --load/--history)
   histories           — список последних историй
   exit, quit          — завершить работу (также Ctrl+C и Ctrl+D)
 Любая другая строка отправляется модели как запрос.
 История сессии сохраняется автоматически после каждого ответа и при выходе.
-Файл промпта: ~/.baylang/prompt.txt; история: ~/.baylang/history/."""
+Файл промпта: ~/.baylang/prompt.txt; история: ~/.baylang/history/;
+журнал: ~/.baylang/baylang.log."""
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Домашняя папка, промпт и истории
+# Домашняя папка, промпт, журнал и истории
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +129,8 @@ def ensure_app_dirs() -> None:
     """Создать домашнюю папку приложения и каталог историй.
 
     Если файл ``prompt.txt`` отсутствует, записывается промпт по умолчанию,
-    чтобы пользователь мог отредактировать его перед запуском.
+    чтобы пользователь мог отредактировать его перед запуском. Каталог
+    создаётся и для журнала ``baylang.log`` (лежит в самой домашней папке).
     """
     APP_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -128,6 +139,50 @@ def ensure_app_dirs() -> None:
             DEFAULT_PROMPT_FILE.write_text(SYSTEM_PROMPT + "\n", encoding="utf-8")
         except OSError as exc:
             logger.warning("Не удалось создать %s: %s", DEFAULT_PROMPT_FILE, exc)
+
+
+def setup_logging(verbose: bool = False) -> Path:
+    """Настроить логирование: консоль + файл журнала в домашней папке.
+
+    В ``~/.baylang/baylang.log`` пишутся **все** сообщения начиная с
+    уровня DEBUG — независимо от ``--verbose``; в консоль выводятся
+    WARNING и выше, либо DEBUG при ``--verbose``. Файл открывается в
+    режиме дополнения и ротируется (``LOG_MAX_BYTES`` × ``LOG_BACKUP_COUNT``),
+    чтобы журнал не разрастался бесконечно. Повторный вызов безопасен:
+    старые обработчики снимаются перед добавлением новых.
+
+    Args:
+        verbose: ``True`` — дублировать DEBUG-сообщения в консоль.
+
+    Returns:
+        Путь к открытому файлу журнала (или к ``LOG_FILE``, если файл
+        открыть не удалось — ошибка не прерывает работу приложения).
+    """
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.DEBUG if verbose else logging.WARNING)
+    console.setFormatter(logging.Formatter(LOG_FORMAT))
+    root.addHandler(console)
+
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        root.addHandler(file_handler)
+    except OSError as exc:
+        root.warning("Не удалось открыть журнал %s: %s", LOG_FILE, exc)
+    return LOG_FILE
 
 
 def load_system_prompt(path: Optional[Path] = None) -> str:
@@ -150,7 +205,7 @@ def load_system_prompt(path: Optional[Path] = None) -> str:
     return text or SYSTEM_PROMPT
 
 
-def _normalize_history_name(name: str) -> str:
+def normalize_history_name(name: str) -> str:
     """Нормализовать имя истории в безопасное имя файла ``*.json``.
 
     Args:
@@ -215,11 +270,12 @@ def save_history(agent: Agent, name: Optional[str] = None) -> Path:
     """
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     if name:
-        filename = _normalize_history_name(name)
+        filename = normalize_history_name(name)
     else:
         filename = new_session_name() + ".json"
     path = HISTORY_DIR / filename
     path.write_text(agent.context.to_json(indent=2), encoding="utf-8")
+    logger.debug("История сохранена: %s (%d сообщений)", path, len(agent.context))
     return path
 
 
@@ -258,7 +314,7 @@ def load_history(agent: Agent, name: str) -> int:
         FileNotFoundError: Если файл истории не найден.
         ValueError: Если имя некорректно или файл повреждён.
     """
-    filename = _normalize_history_name(name)
+    filename = normalize_history_name(name)
     path = HISTORY_DIR / filename
     if not path.is_file():
         raise FileNotFoundError(f"История {filename!r} не найдена в {HISTORY_DIR}")
@@ -266,6 +322,7 @@ def load_history(agent: Agent, name: str) -> int:
         agent.context = Context.from_json(path.read_text(encoding="utf-8"))
     except ValueError as exc:
         raise ValueError(f"Файл истории {filename!r} повреждён: {exc}") from exc
+    logger.info("История загружена: %s (%d сообщений)", path, len(agent.context))
     return len(agent.context)
 
 
@@ -314,10 +371,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--history",
+        "--load",
+        dest="history",
         metavar="ИМЯ",
         help=(
             "загрузить сохранённую историю из ~/.baylang/history/<имя>.json "
-            "перед стартом (по умолчанию — новая сессия с чистой историей)"
+            "перед стартом (алиас: --load; по умолчанию — новая сессия "
+            "с чистой историей)"
         ),
     )
     parser.add_argument(
@@ -415,6 +475,8 @@ def build_agent(args: argparse.Namespace) -> Agent:
         max_iters=args.max_iters,
     )
     agent.context.add_message(TextMessage.system(system_prompt))
+    logger.debug("Агент собран: модель=%s, max_iters=%d, temperature=%s",
+                 model, args.max_iters, args.temperature)
     return agent
 
 
@@ -451,7 +513,8 @@ async def run_interactive(
     ``load <имя>``, ``histories``, ``exit``/``quit``. Ошибки API не роняют
     приложение: сообщение выводится, диалог продолжается. После каждого
     ответа модели история сессии автоматически сохраняется в JSON pretty
-    с именем ``<history_name>.json`` (метка времени сессии).
+    с именем ``<history_name>.json`` (метка времени сессии). Весь ход
+    диалога дублируется в журнал ``~/.baylang/baylang.log``.
 
     Args:
         agent: Агент.
@@ -464,6 +527,7 @@ async def run_interactive(
     """
     if history_name is None:
         history_name = new_session_name()
+    logger.info("Интерактивный режим, сессия: %s", history_name)
     print(
         f"{APP_NAME} {APP_VERSION}. Справка: help; история: histories/save/load; "
         "очистка контекста: clear; выход: exit."
@@ -479,11 +543,13 @@ async def run_interactive(
         if not line:
             continue
 
+        logger.debug("you> %s", line)
         parts = line.split(maxsplit=1)
         command = parts[0].lower()
         rest = parts[1].strip() if len(parts) > 1 else ""
 
         if command in ("exit", "quit"):
+            logger.info("Завершение по команде пользователя, сессия: %s", history_name)
             print("До встречи! 👋")
             return EXIT_OK
         if command == "help":
@@ -491,6 +557,7 @@ async def run_interactive(
             continue
         if command == "clear":
             agent.reset()
+            logger.info("Контекст диалога очищен")
             print("Контекст диалога очищен.")
             continue
         if command == "model":
@@ -498,15 +565,18 @@ async def run_interactive(
                 print("Использование: model <имя модели>")
                 continue
             agent.provider.model_name = rest
+            logger.info("Модель изменена: %s", rest)
             print(f"Модель изменена: {rest}")
             continue
         if command == "save":
             try:
                 path = save_history(agent, rest or None)
             except ValueError as exc:
+                logger.warning("Ошибка сохранения истории: %s", exc)
                 print(f"Ошибка: {exc}")
                 continue
             except OSError as exc:
+                logger.warning("Не удалось сохранить историю: %s", exc)
                 print(f"Не удалось сохранить историю: {exc}")
                 continue
             print(f"История сохранена: {path}")
@@ -518,6 +588,7 @@ async def run_interactive(
             try:
                 count = load_history(agent, rest)
             except (FileNotFoundError, ValueError) as exc:
+                logger.warning("Не удалось загрузить историю: %s", exc)
                 print(f"Не удалось загрузить историю: {exc}")
                 continue
             print(f"История загружена: {count} сообщений.")
@@ -531,13 +602,18 @@ async def run_interactive(
         try:
             text = await agent.send()
         except ProviderError as exc:
+            logger.error("Ошибка запроса к API: %s", exc)
             print(f"assistant> Ошибка запроса: {exc}")
             print("Проверьте сеть и API-ключ, затем попробуйте ещё раз.")
             continue
         except BayLangError as exc:
+            logger.error("Ошибка агента: %s", exc)
             print(f"assistant> Ошибка: {exc}")
             continue
         elapsed = time.perf_counter() - started
+        logger.debug(
+            "assistant> %s (%.2f с%s)", text, elapsed, usage_suffix(agent)
+        )
         print(f"assistant> {text}")
         if args.verbose:
             print(
@@ -551,9 +627,11 @@ async def run_app(args: argparse.Namespace) -> int:
     """Выполнить приложение: сборка агента, режим работы, автосохранение.
 
     По умолчанию стартует новая сессия; старая история загружается только
-    по ``--history`` или команде ``load``. История сохраняется всегда:
-    автоматически после каждого ответа и ещё раз в блоке ``finally``
-    при завершении (имя файла — метка времени сессии, формат JSON pretty).
+    по ``--history`` (алиас ``--load``) или команде ``load``. История
+    сохраняется всегда: автоматически после каждого ответа и ещё раз в
+    блоке ``finally`` при завершении (имя файла — метка времени сессии,
+    формат JSON pretty). Ключевые события пишутся в журнал
+    ``~/.baylang/baylang.log``.
 
     Args:
         args: Аргументы командной строки.
@@ -565,9 +643,11 @@ async def run_app(args: argparse.Namespace) -> int:
     try:
         agent = build_agent(args)
     except ConfigurationError as exc:
+        logger.error("Ошибка конфигурации: %s", exc)
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
     except BayLangError as exc:
+        logger.error("Ошибка сборки агента: %s", exc)
         print(f"Ошибка: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
@@ -577,6 +657,7 @@ async def run_app(args: argparse.Namespace) -> int:
         try:
             count = load_history(agent, args.history)
         except (FileNotFoundError, ValueError) as exc:
+            logger.error("Ошибка загрузки истории %r: %s", args.history, exc)
             print(f"Ошибка загрузки истории: {exc}", file=sys.stderr)
             return EXIT_CONFIG_ERROR
         print(
@@ -598,6 +679,7 @@ async def run_app(args: argparse.Namespace) -> int:
     try:
         if args.prompt:
             started = time.perf_counter()
+            logger.debug("Одноразовый запрос: %s", args.prompt)
             text = await _send_with_retry(agent, args.prompt)
             print(text)
             if args.verbose:
@@ -612,9 +694,11 @@ async def run_app(args: argparse.Namespace) -> int:
         print("\nДо встречи! 👋")
         exit_code = EXIT_OK
     except ProviderError as exc:
+        logger.error("Ошибка выполнения: %s", exc)
         print(f"Ошибка выполнения: {exc}", file=sys.stderr)
         exit_code = EXIT_RUNTIME_ERROR
     except BayLangError as exc:
+        logger.error("Ошибка: %s", exc)
         print(f"Ошибка: {exc}", file=sys.stderr)
         exit_code = EXIT_RUNTIME_ERROR
     finally:
@@ -622,6 +706,7 @@ async def run_app(args: argparse.Namespace) -> int:
         try:
             save_history(agent, name=session_name)
         except (OSError, ValueError) as exc:
+            logger.warning("Не удалось сохранить историю: %s", exc)
             print(f"Не удалось сохранить историю: {exc}", file=sys.stderr)
         await agent.disconnect()
     return exit_code
@@ -632,6 +717,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     Новая сессия стартует по умолчанию; история диалога сохраняется
     автоматически и всегда (имя файла — метка времени, JSON pretty).
+    Журнал работы пишется в ``~/.baylang/baylang.log`` (ротация 1 МБ × 3).
 
     Args:
         argv: Аргументы командной строки; ``None`` — ``sys.argv[1:]``.
@@ -641,12 +727,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ``2`` — ошибка конфигурации.
     """
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
     ensure_app_dirs()
+    setup_logging(verbose=args.verbose)
+    logger.info(
+        "%s %s запущен (verbose=%s, аргументы: %s)",
+        APP_NAME,
+        APP_VERSION,
+        args.verbose,
+        vars(args),
+    )
 
     if args.list_histories:
         print_histories()
