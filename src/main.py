@@ -159,7 +159,7 @@ def setup_logging(verbose: bool = False) -> Path:
         открыть не удалось — ошибка не прерывает работу приложения).
     """
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.WARNING)
     for handler in list(root.handlers):
         root.removeHandler(handler)
         handler.close()
@@ -177,7 +177,7 @@ def setup_logging(verbose: bool = False) -> Path:
             backupCount=LOG_BACKUP_COUNT,
             encoding="utf-8",
         )
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.WARNING)
         file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
         root.addHandler(file_handler)
     except OSError as exc:
