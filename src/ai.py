@@ -11,6 +11,10 @@
 
 Все сетевые операции выполняются асинхронно через ``httpx``; блокирующие
 вызовы в асинхронном контексте не используются.
+
+Провайдер отправляет запросы с подсказкой кеширования промпта:
+к последнему сообщению добавляется блок ``cache_control: {"type": "ephemeral"}``,
+который включает prompt caching у провайдеров, поддерживающих его.
 """
 
 from __future__ import annotations
@@ -706,12 +710,28 @@ class OpenRouterProvider(Provider):
         }
 
     def _build_payload(
-        self, context: Context, tools: Optional[list[dict[str, Any]]] = None, stream: bool = False
+        self,
+        context: Context,
+        tools: Optional[list[dict[str, Any]]] = None,
+        stream: bool = False,
+        cache_control: bool = True,
     ) -> dict[str, Any]:
-        """Собрать тело запроса в формате OpenAI chat-completions."""
+        """Собрать тело запроса в формате OpenAI chat-completions.
+
+        Если ``cache_control`` включён (по умолчанию), к последнему сообщению
+        добавляется блок ``cache_control: {"type": "ephemeral"}``. Такая
+        подсказка включает prompt caching у провайдеров, поддерживающих его
+        (например, Anthropic через OpenRouter): кешируется префикс диалога,
+        что ускоряет повторные запросы и снижает стоимость токенов.
+        """
+        messages = context.get_data()
+        if cache_control and messages:
+            last_message = dict(messages[-1])
+            last_message["cache_control"] = {"type": "ephemeral"}
+            messages[-1] = last_message
         payload: dict[str, Any] = {
             "model": self.get_model_name(),
-            "messages": context.get_data(),
+            "messages": messages,
             "temperature": self.temperature,
             "stream": stream,
         }
@@ -923,7 +943,7 @@ class Tool:
             self.parameters_schema = parameters_schema
         else:
             raise ConfigurationError(
-                f"parameters_schema инструмента {self.name!r} должен быть словарём"
+                f"parameters_schema инструмента {name!r} должен быть словарём"
             )
         self.handler = handler
 

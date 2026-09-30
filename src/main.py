@@ -5,11 +5,23 @@
     python -m src.main --prompt "Скажи привет"
     python -m src                # интерактивный режим (через src/__main__.py)
 
-Конфигурация:
+Конфигурация (хранится в переменных окружения):
 
-* ключ API читается из переменной окружения ``OPENROUTER_API_KEY``;
-* модель — из ``OPENROUTER_MODEL`` или аргумента ``--model``
+* ключ API — ``OPENROUTER_API_KEY`` (обязательна);
+* модель — ``OPENROUTER_MODEL`` или аргумент ``--model``
   (приоритет: аргумент > переменная окружения > значение по умолчанию).
+
+Домашняя папка приложения (``~/.baylang``):
+
+* ``prompt.txt`` — системный промпт (создаётся с промптом по умолчанию,
+  если файла нет; путь можно переопределить через ``--prompt-file``);
+* ``history/`` — сохранённые истории диалогов (JSON, имя по умолчанию —
+  метка времени, например ``20250101_120000.json``).
+
+При запуске история всегда чистая; загрузить сохранённую историю можно
+флагом ``--history <имя>`` или командой ``load <имя>`` в интерактивном
+режиме. Список последних историй выводится командой ``histories`` или
+флагом ``--list-histories``.
 
 Коды возврата: ``0`` — успех, ``1`` — ошибка выполнения,
 ``2`` — ошибка конфигурации.
@@ -24,12 +36,14 @@ import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Sequence
 
 from .ai import (
     Agent,
     BayLangError,
     ConfigurationError,
+    Context,
     OpenRouterProvider,
     ProviderError,
     TextMessage,
@@ -44,10 +58,16 @@ __all__ = [
     "parse_args",
     "main",
     "mask_api_key",
+    "ensure_app_dirs",
+    "load_system_prompt",
+    "list_histories",
+    "save_history",
+    "load_history",
+    "print_histories",
 ]
 
 APP_NAME = "BayLang AI"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 ENV_API_KEY = "OPENROUTER_API_KEY"
 ENV_MODEL = "OPENROUTER_MODEL"
@@ -56,6 +76,12 @@ EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_CONFIG_ERROR = 2
 
+# Домашняя папка приложения: промпт и истории диалогов.
+APP_DIR = Path.home() / ".baylang"
+DEFAULT_PROMPT_FILE = APP_DIR / "prompt.txt"
+HISTORY_DIR = APP_DIR / "history"
+HISTORY_LIST_LIMIT = 10
+
 SYSTEM_PROMPT = (
     "Ты — полезный ассистент BayLang AI. Отвечай кратко и по делу, "
     "по-русски, если пользователь не просит иначе."
@@ -63,15 +89,161 @@ SYSTEM_PROMPT = (
 
 HELP_TEXT = """\
 Команды:
-  help          — показать эту справку
-  clear         — очистить контекст диалога
-  model <имя>   — сменить модель на лету (например: model openai/gpt-4o-mini)
-  exit, quit    — завершить работу (также Ctrl+C и Ctrl+D)
-Любая другая строка отправляется модели как запрос."""
+  help                — показать эту справку
+  clear               — очистить контекст диалога
+  model <имя>         — сменить модель на лету (например: model openai/gpt-4o-mini)
+  save [имя]          — сохранить историю (имя по умолчанию — метка времени)
+  load <имя>          — загрузить историю из ~/.baylang/history
+  histories           — список последних историй
+  exit, quit          — завершить работу (также Ctrl+C и Ctrl+D)
+Любая другая строка отправляется модели как запрос.
+Файл промпта: ~/.baylang/prompt.txt; история: ~/.baylang/history/."""
 
 logger = logging.getLogger(__name__)
 
 _LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+# ---------------------------------------------------------------------------
+# Домашняя папка, промпт и истории
+# ---------------------------------------------------------------------------
+
+
+def ensure_app_dirs() -> None:
+    """Создать домашнюю папку приложения и каталог историй.
+
+    Если файл ``prompt.txt`` отсутствует, записывается промпт по умолчанию,
+    чтобы пользователь мог отредактировать его перед запуском.
+    """
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    if not DEFAULT_PROMPT_FILE.exists():
+        try:
+            DEFAULT_PROMPT_FILE.write_text(SYSTEM_PROMPT + "\n", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Не удалось создать %s: %s", DEFAULT_PROMPT_FILE, exc)
+
+
+def load_system_prompt(path: Optional[Path] = None) -> str:
+    """Загрузить системный промпт из файла.
+
+    По умолчанию читается ``~/.baylang/prompt.txt``. Если файл отсутствует
+    или пуст, возвращается промпт по умолчанию (:data:`SYSTEM_PROMPT`).
+
+    Args:
+        path: Путь к файлу промпта; ``None`` — путь по умолчанию.
+
+    Returns:
+        Текст системного промпта.
+    """
+    file_path = Path(path).expanduser() if path else DEFAULT_PROMPT_FILE
+    try:
+        text = file_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return SYSTEM_PROMPT
+    return text or SYSTEM_PROMPT
+
+
+def _normalize_history_name(name: str) -> str:
+    """Нормализовать имя истории в безопасное имя файла ``*.json``.
+
+    Args:
+        name: Имя истории (без расширения или с ``.json``).
+
+    Returns:
+        Имя файла вида ``<name>.json``.
+
+    Raises:
+        ValueError: Если имя пустое или содержит недопустимые символы.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Имя истории не может быть пустым")
+    if any(sep in name for sep in ("/", "\\")) or name in (".", "..") or name.startswith("."):
+        raise ValueError(f"Недопустимое имя истории: {name!r}")
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    return name
+
+
+def list_histories(limit: int = HISTORY_LIST_LIMIT) -> list[Path]:
+    """Вернуть пути к последним файлам истории (новые — первыми).
+
+    Args:
+        limit: Максимальное число файлов.
+
+    Returns:
+        Список путей к JSON-файлам истории; пустой список, если история
+        ещё не создавалась.
+    """
+    if not HISTORY_DIR.is_dir():
+        return []
+    files = [p for p in HISTORY_DIR.glob("*.json") if p.is_file()]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[: max(int(limit), 0)]
+
+
+def save_history(agent: Agent, name: Optional[str] = None) -> Path:
+    """Сохранить текущий контекст агента в файл истории.
+
+    Args:
+        agent: Агент, чей контекст сохраняется.
+        name: Имя истории; ``None`` — метка времени в формате
+            ``YYYYMMDD_HHMMSS`` (timestamp).
+
+    Returns:
+        Путь к сохранённому файлу истории.
+
+    Raises:
+        ValueError: Если имя истории некорректно.
+        OSError: Если файл не удалось записать.
+    """
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    if name:
+        filename = _normalize_history_name(name)
+    else:
+        filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
+    path = HISTORY_DIR / filename
+    path.write_text(agent.context.to_json(indent=2), encoding="utf-8")
+    return path
+
+
+def load_history(agent: Agent, name: str) -> int:
+    """Загрузить историю по имени и подставить её контексту агента.
+
+    Args:
+        agent: Агент, контекст которого заменяется содержимым истории.
+        name: Имя истории (в ``~/.baylang/history``).
+
+    Returns:
+        Количество загруженных сообщений.
+
+    Raises:
+        FileNotFoundError: Если файл истории не найден.
+        ValueError: Если имя некорректно или файл повреждён.
+    """
+    filename = _normalize_history_name(name)
+    path = HISTORY_DIR / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"История {filename!r} не найдена в {HISTORY_DIR}")
+    try:
+        agent.context = Context.from_json(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"Файл истории {filename!r} повреждён: {exc}") from exc
+    return len(agent.context)
+
+
+def print_histories(limit: int = HISTORY_LIST_LIMIT) -> None:
+    """Вывести список последних историй (имя, дата, размер)."""
+    files = list_histories(limit)
+    if not files:
+        print(f"Историй пока нет: {HISTORY_DIR}")
+        return
+    print(f"Последние истории ({HISTORY_DIR}):")
+    for path in files:
+        stat = path.stat()
+        mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"  {path.stem:<24} {mtime}  {stat.st_size} байт")
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +271,28 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         help=f"модель OpenRouter (по умолчанию: {DEFAULT_MODEL}, env {ENV_MODEL})",
+    )
+    parser.add_argument(
+        "--prompt-file",
+        help=f"файл системного промпта (по умолчанию: {DEFAULT_PROMPT_FILE})",
+    )
+    parser.add_argument(
+        "--history",
+        metavar="ИМЯ",
+        help=(
+            "загрузить сохранённую историю из ~/.baylang/history/<имя>.json "
+            "перед стартом (по умолчанию — чистая история)"
+        ),
+    )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="сохранить историю при завершении (имя — метка времени)",
+    )
+    parser.add_argument(
+        "--list-histories",
+        action="store_true",
+        help="вывести список последних историй и завершиться",
     )
     parser.add_argument(
         "--max-iters",
@@ -193,7 +387,8 @@ def build_agent(args: argparse.Namespace) -> Agent:
     """Собрать агента: провайдер, инструменты, параметры.
 
     Ключ API читается из переменной окружения ``OPENROUTER_API_KEY``,
-    модель — из ``--model`` или ``OPENROUTER_MODEL``.
+    модель — из ``--model`` или ``OPENROUTER_MODEL``. Системный промпт
+    загружается из файла (по умолчанию ``~/.baylang/prompt.txt``).
 
     Args:
         args: Аргументы командной строки (:func:`parse_args`).
@@ -212,6 +407,8 @@ def build_agent(args: argparse.Namespace) -> Agent:
             f"export {ENV_API_KEY}=sk-or-..."
         )
     model = (args.model or os.environ.get(ENV_MODEL, "").strip() or DEFAULT_MODEL).strip()
+    prompt_file = getattr(args, "prompt_file", None)
+    system_prompt = load_system_prompt(Path(prompt_file).expanduser() if prompt_file else None)
     provider = OpenRouterProvider(
         api_key=api_key,
         model_name=model,
@@ -225,7 +422,7 @@ def build_agent(args: argparse.Namespace) -> Agent:
         provider=provider,
         tools=registry,
         max_iters=args.max_iters,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
     )
 
 
@@ -325,8 +522,9 @@ def run_once(agent: Agent, prompt: str, args: argparse.Namespace) -> str:
 def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
     """Интерактивный режим: цикл чтения строк со стандартного ввода.
 
-    Команды: ``help``, ``clear``, ``model <имя>``, ``exit``/``quit``.
-    Ошибки API не роняют приложение: сообщение выводится, диалог продолжается.
+    Команды: ``help``, ``clear``, ``model <имя>``, ``save [имя]``,
+    ``load <имя>``, ``histories``, ``exit``/``quit``. Ошибки API не роняют
+    приложение: сообщение выводится, диалог продолжается.
 
     Args:
         agent: Агент.
@@ -335,7 +533,10 @@ def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
     Returns:
         Код выхода (0 — корректное завершение).
     """
-    print(f"{APP_NAME} {APP_VERSION}. Справка: help; очистка контекста: clear; выход: exit.")
+    print(
+        f"{APP_NAME} {APP_VERSION}. Справка: help; история: histories/save/load; "
+        "очистка контекста: clear; выход: exit."
+    )
     loop = _get_loop()
     while True:
         try:
@@ -368,6 +569,31 @@ def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
                 continue
             agent.provider.model_name = rest
             print(f"Модель изменена: {rest}")
+            continue
+        if command == "save":
+            try:
+                path = save_history(agent, rest or None)
+            except ValueError as exc:
+                print(f"Ошибка: {exc}")
+                continue
+            except OSError as exc:
+                print(f"Не удалось сохранить историю: {exc}")
+                continue
+            print(f"История сохранена: {path}")
+            continue
+        if command == "load":
+            if not rest:
+                print("Использование: load <имя> (список историй: histories)")
+                continue
+            try:
+                count = load_history(agent, rest)
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"Не удалось загрузить историю: {exc}")
+                continue
+            print(f"История загружена: {count} сообщений.")
+            continue
+        if command == "histories":
+            print_histories()
             continue
 
         started = time.perf_counter()
@@ -408,6 +634,9 @@ def _shutdown(agent: Agent, loop: asyncio.AbstractEventLoop) -> None:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Оркестратор приложения: парсинг аргументов, сборка агента, режим работы.
 
+    История по умолчанию чистая; загрузка выполняется по ``--history``,
+    сохранение по ``--save`` или команде ``save`` в интерактивном режиме.
+
     Args:
         argv: Аргументы командной строки; ``None`` — ``sys.argv[1:]``.
 
@@ -421,6 +650,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    ensure_app_dirs()
+
+    if args.list_histories:
+        print_histories()
+        return EXIT_OK
+
     try:
         agent = build_agent(args)
     except ConfigurationError as exc:
@@ -430,12 +665,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
+    if args.history:
+        try:
+            count = load_history(agent, args.history)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Ошибка загрузки истории: {exc}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+        print(
+            f"Загружена история '{args.history}': {count} сообщений.",
+            file=sys.stderr,
+        )
+
     if args.verbose:
         api_key = os.environ.get(ENV_API_KEY, "")
         logger.debug(
-            "Модель: %s; ключ API: %s",
+            "Модель: %s; ключ API: %s; промпт: %s",
             agent.provider.get_model_name(),
             mask_api_key(api_key),
+            DEFAULT_PROMPT_FILE,
         )
 
     loop = _get_loop()
@@ -455,6 +702,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return EXIT_RUNTIME_ERROR
     finally:
+        if args.save:
+            try:
+                path = save_history(agent, name=None)
+                print(f"История сохранена: {path}", file=sys.stderr)
+            except (OSError, ValueError) as exc:
+                print(f"Не удалось сохранить историю: {exc}", file=sys.stderr)
         _shutdown(agent, loop)
 
 

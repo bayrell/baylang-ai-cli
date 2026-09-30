@@ -1,0 +1,16 @@
+# Исключить из контекста сборки всё, что не нужно в образе
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+docs
+tests
+README.md
+LICENSE
+build.sh
+Dockerfile
+.dockerignore
