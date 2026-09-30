@@ -2,8 +2,9 @@
 
 Модуль содержит базовые абстракции библиотеки:
 
-* :class:`TextMessage` — сообщение диалога в формате OpenAI-совместимого API;
-* :class:`Context` — диалоговый контекст с ограничением длины;
+* :class:`TextMessage`, :class:`ToolResultMessage`, :class:`ToolsMessage` —
+  сообщения диалога в формате OpenAI-совместимого API;
+* :class:`Context` — диалоговый контекст с ограничением длины и JSON-сериализацией;
 * :class:`Provider` / :class:`OpenRouterProvider` — асинхронные провайдеры LLM;
 * :class:`Tool` / :class:`ToolRegistry` — подсистема инструментов (function);
 * :class:`Agent` — агент с циклом ReAct и fallback-цепочкой провайдеров.
@@ -19,7 +20,7 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Optional, Union
 
 import httpx
 
@@ -31,6 +32,8 @@ __all__ = [
     "ProviderError",
     "ToolError",
     "TextMessage",
+    "ToolResultMessage",
+    "ToolsMessage",
     "Context",
     "ProviderResponse",
     "Provider",
@@ -88,6 +91,9 @@ class ToolError(BayLangError):
 class TextMessage:
     """Текстовое сообщение диалога в формате OpenAI-совместимого API.
 
+    Базовый класс сообщений контекста. Наследники :class:`ToolResultMessage`
+    и :class:`ToolsMessage` расширяют его для tool-цепочек и JSON-сериализации.
+
     Attributes:
         role: Роль отправителя (``user``, ``assistant``, ``system`` или ``tool``).
         content: Текст сообщения.
@@ -101,6 +107,9 @@ class TextMessage:
     ROLE_TOOL = "tool"
 
     VALID_ROLES = frozenset({ROLE_USER, ROLE_AI, ROLE_SYSTEM, ROLE_TOOL})
+
+    #: Тип сообщения для JSON-сериализации (диспетчеризация при восстановлении).
+    MESSAGE_TYPE = "text"
 
     def __init__(
         self,
@@ -137,6 +146,59 @@ class TextMessage:
             data["tools"] = self.tools
         return data
 
+    def to_dict(self) -> dict[str, Any]:
+        """Сериализовать сообщение в словарь для сохранения в JSON.
+
+        В отличие от :meth:`get_data`, результат содержит поле ``type``
+        с диспетчером класса, по которому :meth:`from_dict` восстановит
+        исходный тип сообщения.
+
+        Returns:
+            Словарь вида ``{"type": "text", "role": ..., "content": ...}``.
+        """
+        data = self.get_data()
+        data["type"] = self.MESSAGE_TYPE
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TextMessage":
+        """Восстановить сообщение из словаря (:meth:`to_dict`).
+
+        Диспетчеризация выполняется по полю ``type``; для словарей без
+        этого поля тип определяется по роли и наличию поля ``tools``.
+
+        Args:
+            data: Словарь сообщения.
+
+        Returns:
+            Объект :class:`TextMessage`, :class:`ToolResultMessage`
+            или :class:`ToolsMessage`.
+
+        Raises:
+            ValueError: Если ``data`` не словарь или_ROLE сообщения
+                некорректен; для ``tool_result`` — если отсутствует
+                непустой ``tool_id``.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Сообщение должно быть словарём")
+        message_type = data.get("type") or cls._infer_type(data)
+        if message_type == ToolResultMessage.MESSAGE_TYPE:
+            return ToolResultMessage.from_dict(data)
+        if message_type == ToolsMessage.MESSAGE_TYPE:
+            return ToolsMessage.from_dict(data)
+        role = data.get("role") or TextMessage.ROLE_USER
+        content = data.get("content") or ""
+        return TextMessage(role, content, tool_id=data.get("tool_id"), tools=data.get("tools"))
+
+    @staticmethod
+    def _infer_type(data: dict[str, Any]) -> str:
+        """Определить тип сообщения по роли и наличию ``tools`` (legacy JSON)."""
+        if data.get("role") == TextMessage.ROLE_TOOL:
+            return ToolResultMessage.MESSAGE_TYPE
+        if data.get("tools"):
+            return ToolsMessage.MESSAGE_TYPE
+        return TextMessage.MESSAGE_TYPE
+
     @classmethod
     def user(cls, text: str) -> "TextMessage":
         """Создать сообщение пользователя."""
@@ -153,22 +215,173 @@ class TextMessage:
         return cls(cls.ROLE_AI, text)
 
     @classmethod
-    def tool_result(cls, content: str, tool_id: str) -> "TextMessage":
-        """Создать сообщение с результатом выполнения инструмента."""
-        return cls(cls.ROLE_TOOL, content, tool_id=tool_id)
+    def tool_result(cls, content: str, tool_id: str) -> "ToolResultMessage":
+        """Создать сообщение с результатом выполнения инструмента.
+
+        Возвращает :class:`ToolResultMessage` (обратная совместимость сохранена).
+        """
+        return ToolResultMessage(content, tool_id=tool_id)
 
     def __repr__(self) -> str:
         preview = self.content if len(self.content) <= 40 else self.content[:37] + "..."
         return f"TextMessage(role={self.role!r}, content={preview!r})"
 
 
+class ToolResultMessage(TextMessage):
+    """Сообщение с результатом выполнения инструмента (роль ``tool``).
+
+    Содержит идентификатор вызова ``tool_id``, по которому результат
+    связывается с соответствующим сообщением :class:`ToolsMessage`.
+    Поддерживает JSON-сериализацию через :meth:`to_dict` / :meth:`from_dict`.
+
+    Args:
+        content: Текст результата выполнения инструмента.
+        tool_id: Идентификатор вызова инструмента (непустая строка).
+
+    Raises:
+        ValueError: Если ``tool_id`` пуст.
+    """
+
+    MESSAGE_TYPE = "tool_result"
+
+    def __init__(self, content: str, tool_id: str) -> None:
+        if not isinstance(tool_id, str) or not tool_id.strip():
+            raise ValueError("ToolResultMessage требует непустой tool_id")
+        super().__init__(TextMessage.ROLE_TOOL, content, tool_id=tool_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Сериализовать сообщение в словарь для сохранения в JSON.
+
+        Returns:
+            Словарь ``{"type": "tool_result", "role": "tool",
+            "content": ..., "tool_id": ...}``.
+        """
+        return {
+            "type": self.MESSAGE_TYPE,
+            "role": self.role,
+            "content": self.content,
+            "tool_id": self.tool_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolResultMessage":
+        """Восстановить сообщение результата из словаря.
+
+        Поддерживает и поле ``tool_id``, и стандартное для OpenAI
+        поле ``tool_call_id``.
+
+        Args:
+            data: Словарь сообщения.
+
+        Returns:
+            Объект :class:`ToolResultMessage`.
+
+        Raises:
+            ValueError: Если ``data`` не словарь или отсутствует
+                непустой идентификатор вызова.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Сообщение должно быть словарём")
+        tool_id = data.get("tool_id") or data.get("tool_call_id") or ""
+        if not isinstance(tool_id, str) or not tool_id.strip():
+            raise ValueError("ToolResultMessage требует непустой tool_id")
+        return cls(data.get("content") or "", tool_id=tool_id)
+
+    def __repr__(self) -> str:
+        preview = self.content if len(self.content) <= 40 else self.content[:37] + "..."
+        return f"ToolResultMessage(tool_id={self.tool_id!r}, content={preview!r})"
+
+
+class ToolsMessage(TextMessage):
+    """Сообщение ассистента со списком вызовов инструментов.
+
+    Соответствует ответу модели, содержащему поле ``tool_calls``
+    (внутри библиотеки — атрибут ``tools``). Позволяет сохранять
+    и восстанавливать контекст с tool-цепочками в JSON.
+
+    Attributes:
+        content: Текст ответа модели (может быть пустым, если модель
+            вернула только вызовы инструментов).
+        tools: Список вызовов инструментов в формате провайдера.
+
+    Args:
+        content: Текст ответа модели.
+        tools: Список вызовов инструментов (допустим пустой список,
+            но не ``None``).
+
+    Raises:
+        ValueError: Если ``tools`` не является списком.
+    """
+
+    MESSAGE_TYPE = "tools"
+
+    def __init__(
+        self,
+        content: str = "",
+        tools: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        if tools is None:
+            raise ValueError("ToolsMessage требует список tools (допустим пустой)")
+        if not isinstance(tools, list):
+            raise ValueError("ToolsMessage.tools должен быть списком")
+        super().__init__(TextMessage.ROLE_AI, content, tools=tools)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Сериализовать сообщение в словарь для сохранения в JSON.
+
+        Поле ``tools`` сохраняется всегда (даже если список пуст),
+        чтобы восстановление было точным.
+
+        Returns:
+            Словарь ``{"type": "tools", "role": "assistant",
+            "content": ..., "tools": [...]}``.
+        """
+        return {
+            "type": self.MESSAGE_TYPE,
+            "role": self.role,
+            "content": self.content,
+            "tools": list(self.tools or []),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolsMessage":
+        """Восстановить сообщение с tool-вызовами из словаря.
+
+        Args:
+            data: Словарь сообщения.
+
+        Returns:
+            Объект :class:`ToolsMessage`.
+
+        Raises:
+            ValueError: Если ``data`` не словарь или поле ``tools``
+                не является списком.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Сообщение должно быть словарём")
+        tools = data.get("tools")
+        if tools is None:
+            tools = []
+        if not isinstance(tools, list):
+            raise ValueError("ToolsMessage.tools должен быть списком")
+        return cls(data.get("content") or "", tools=tools)
+
+    def __repr__(self) -> str:
+        count = len(self.tools or [])
+        preview = self.content if len(self.content) <= 40 else self.content[:37] + "..."
+        return f"ToolsMessage(tools={count}, content={preview!r})"
+
+
 class Context:
     """Диалоговый контекст: упорядоченная история сообщений.
 
     Хранилище приватное; внешний доступ к списку сообщений возможен только
-    через методы :meth:`add_message`, :meth:`get_data`, :meth:`trim`,
-    :meth:`clear`, :meth:`truncate`, :meth:`last_response`, а также итерацию
-    и ``len()``.
+    через методы :meth:`add_message`, :meth:`get_data`, :meth:`to_dict`,
+    :meth:`to_json`, :meth:`trim`, :meth:`clear`, :meth:`truncate`,
+    :meth:`last_response`, а также итерацию и ``len()``.
+
+    Контекст можно сохранять в JSON (:meth:`to_json`) и восстанавливать
+    из него (:meth:`from_json`) — tool-цепочки сохраняются полностью.
 
     Args:
         max_messages: Максимальное число хранимых сообщений. При превышении
@@ -185,7 +398,7 @@ class Context:
         """Добавить сообщение в конец контекста.
 
         Args:
-            message: Объект :class:`TextMessage`.
+            message: Объект :class:`TextMessage` (или его наследника).
 
         Raises:
             TypeError: Если передан не ``TextMessage``.
@@ -205,8 +418,79 @@ class Context:
         """
         return [item.get_data() for item in self._items]
 
+    def to_dict(self) -> list[dict[str, Any]]:
+        """Сериализовать контекст в список словарей (для сохранения в JSON).
+
+        Returns:
+            Список словарей с полем ``type`` у каждого сообщения.
+        """
+        return [item.to_dict() for item in self._items]
+
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """Сериализовать контекст в JSON-строку.
+
+        Args:
+            indent: Отступ для читаемого JSON; ``None`` — компактная строка.
+
+        Returns:
+            JSON-строка, обратно читаемая через :meth:`from_json`.
+        """
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: list[dict[str, Any]],
+        max_messages: Optional[int] = None,
+    ) -> "Context":
+        """Восстановить контекст из списка словарей (:meth:`to_dict`).
+
+        Args:
+            data: Список словарей сообщений.
+            max_messages: Лимит сообщений нового контекста.
+
+        Returns:
+            Новый объект :class:`Context`.
+
+        Raises:
+            ValueError: Если ``data`` не список или содержит не-словари.
+        """
+        if not isinstance(data, list):
+            raise ValueError("Контекст должен быть списком сообщений")
+        ctx = cls(max_messages=max_messages)
+        for item in data:
+            if not isinstance(item, dict):
+                raise ValueError("Каждое сообщение контекста должно быть словарём")
+            ctx.add_message(TextMessage.from_dict(item))
+        return ctx
+
+    @classmethod
+    def from_json(
+        cls,
+        data: Union[str, bytes],
+        max_messages: Optional[int] = None,
+    ) -> "Context":
+        """Восстановить контекст из JSON-строки (:meth:`to_json`).
+
+        Args:
+            data: JSON-строка (или байты) со списком сообщений.
+            max_messages: Лимит сообщений нового контекста.
+
+        Returns:
+            Новый объект :class:`Context`.
+
+        Raises:
+            ValueError: Если строка не является корректным JSON-списком
+                сообщений.
+        """
+        try:
+            items = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Некорректный JSON контекста") from exc
+        return cls.from_dict(items, max_messages=max_messages)
+
     def trim(self, max_messages: int) -> None:
-        """Отсечь старые сообщения, оставив последние ``max_messages``.
+        """Отсечь старые сообщения, оставшиеся последние ``max_messages``.
 
         Args:
             max_messages: Сколько последних сообщений сохранить.
@@ -875,10 +1159,8 @@ class Agent:
             self.last_response = response
 
             if response.tools:
-                ctx.add_message(
-                    TextMessage(TextMessage.ROLE_AI, response.text, tools=response.tools)
-                )
-                for tools in response.tools:
+                ctx.add_message(ToolsMessage(response.text, response.tools))
+                for tool in response.tools:
                     name, arguments, tool_id = _parse_tool(tool, len(ctx))
                     try:
                         result = await self.tools.execute(name, arguments)
@@ -890,7 +1172,7 @@ class Agent:
                     except ToolError as exc:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
-                    ctx.add_message(TextMessage.tool_result(result_text, tool_id=tool_id))
+                    ctx.add_message(ToolResultMessage(result_text, tool_id=tool_id))
                 continue
 
             text = response.text

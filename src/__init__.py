@@ -13,6 +13,8 @@ from .ai import (
     Tool,
     ToolError,
     ToolRegistry,
+    ToolResultMessage,
+    ToolsMessage,
 )
 
 __all__ = [
@@ -28,4 +30,6 @@ __all__ = [
     "Tool",
     "ToolError",
     "ToolRegistry",
+    "ToolResultMessage",
+    "ToolsMessage",
 ]

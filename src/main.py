@@ -104,7 +104,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--max-iters",
         type=int,
         default=5,
-        help="максимум итераций tool-calling (по умолчанию: 5)",
+        help="максимум итераций tool (по умолчанию: 5)",
     )
     parser.add_argument(
         "--temperature",
