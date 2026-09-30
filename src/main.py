@@ -1,9 +1,12 @@
+#!/usr/bin/env python3
+
 """Точка входа BayLang AI: интерактивный чат и одноразовый запрос.
 
 Запуск из корня репозитория::
 
     python -m src.main --prompt "Скажи привет"
     python -m src                # интерактивный режим (через src/__main__.py)
+    python src/main.py           # прямой запуск файла (fallback-импорт)
 
 Конфигурация (хранится в переменных окружения):
 
@@ -35,11 +38,12 @@ import logging
 import os
 import sys
 import time
+from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .ai import (
+from ai import (  # type: ignore[no-redef]
     Agent,
     BayLangError,
     ConfigurationError,
@@ -65,6 +69,8 @@ __all__ = [
     "load_history",
     "print_histories",
 ]
+
+load_dotenv()
 
 APP_NAME = "BayLang AI"
 APP_VERSION = "1.0.0"
@@ -129,7 +135,7 @@ def load_system_prompt(path: Optional[Path] = None) -> str:
 
     По умолчанию читается ``~/.baylang/prompt.txt``. Если файл отсутствует
     или пуст, возвращается промпт по умолчанию
-    
+
     Args:
         path: Путь к файлу промпта; ``None`` — путь по умолчанию.
 
@@ -446,7 +452,7 @@ def _send_with_retry(agent: Agent, prompt_text: str, attempts: int = 2) -> str:
     loop = _get_loop()
     for attempt in range(1, attempts + 1):
         try:
-            return loop.run_until_complete(agent.send(agent.context))
+            return loop.run_until_complete(agent.send())
         except ProviderError as exc:
             last_exc = exc
             if attempt >= attempts or not _should_retry(exc):
@@ -560,7 +566,7 @@ def run_interactive(agent: Agent, args: argparse.Namespace) -> int:
         started = time.perf_counter()
         agent.context.add_message(TextMessage.user(line))
         try:
-            text = loop.run_until_complete(agent.send(agent.context))
+            text = loop.run_until_complete(agent.send())
         except ProviderError as exc:
             print(f"assistant> Ошибка запроса: {exc}")
             print("Проверьте сеть и API-ключ, затем попробуйте ещё раз.")
