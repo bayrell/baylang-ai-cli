@@ -61,7 +61,7 @@ class Provider:
         response.raise_for_status()
         result = response.json()
         
-        return result["choices"][0]["message"]["content"]
+        return result
 
 
 class OpenRouterProvider(Provder):
@@ -75,3 +75,46 @@ class OpenRouterProvider(Provder):
     def getUrl(self):
         return "https://openrouter.ai/v1/cjat/completions"
 
+
+class ToolRegistry:
+    
+    def __init__(self):
+        self.items = []
+
+
+class Tool:
+    
+    def __init__(self):
+        self.name = ""
+        self.description = ""
+        self.schema = {}
+    
+    def get_schema(self):
+        return self.schema
+        
+    async def execute(self, params):
+        return None
+
+
+class Agent:
+    
+    def __init__(self, provider, tools):
+        self.provider = provider
+        self.tools = tools
+        
+    
+    async send(self, context):
+        
+        result = await self.provider.send(context)
+        context.add_message(Context.ROLE_AI, result["choices"][0]["message"]["content"])
+        
+        
+    async send_with_fallback(self, context):
+        
+        count = 0
+        while count < self.max_iters:
+            
+            await self.send(context)
+            count += 1
+    
+    
