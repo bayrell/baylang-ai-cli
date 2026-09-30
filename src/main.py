@@ -346,43 +346,6 @@ def mask_api_key(key: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_tools() -> list[Tool]:
-    """Создать демонстрационные инструменты агента.
-
-    Returns:
-        Список инструментов ``get_current_time`` и ``web_search`` (заглушка).
-    """
-
-    def get_current_time() -> str:
-        """Текущие дата и время на сервере в формате ISO-8601."""
-        return datetime.now().isoformat(timespec="seconds")
-
-    def web_search_stub(query: str = "") -> str:
-        """Демонстрационная заглушка веб-поиска."""
-        return f"[заглушка поиска] Запрос {query!r} обработан локально; реальный поиск не выполнялся."
-
-    return [
-        Tool(
-            name="get_current_time",
-            description="Возвращает текущие дату и время на сервере.",
-            parameters_schema={"type": "object", "properties": {}, "required": []},
-            handler=get_current_time,
-        ),
-        Tool(
-            name="web_search",
-            description="Демонстрационная заглушка веб-поиска: подтверждает запрос, не выполняя его.",
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Поисковый запрос"}
-                },
-                "required": ["query"],
-            },
-            handler=web_search_stub,
-        ),
-    ]
-
-
 def build_agent(args: argparse.Namespace) -> Agent:
     """Собрать агента: провайдер, инструменты, параметры.
 
@@ -415,9 +378,6 @@ def build_agent(args: argparse.Namespace) -> Agent:
         temperature=args.temperature,
     )
     registry = ToolRegistry()
-    if not args.no_tools:
-        for tool in _build_tools():
-            registry.register(tool)
     return Agent(
         provider=provider,
         tools=registry,
