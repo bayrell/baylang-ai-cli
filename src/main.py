@@ -12,7 +12,9 @@
 
 * ключ API — ``OPENROUTER_API_KEY`` (обязательна);
 * модель — ``OPENROUTER_MODEL`` или аргумент ``--model``
-  (приоритет: аргумент > переменная окружения > значение по умолчанию).
+  (приоритет: аргумент > переменная окружения > значение по умолчанию);
+* число последних сообщений, показываемых при загрузке истории, —
+  ``BAYLANG_SHOW_MESSAGES`` или аргумент ``--show-messages``.
 
 Домашняя папка приложения (``~/.baylang``):
 
@@ -25,10 +27,16 @@
 
 По умолчанию всегда запускается **новая сессия**; сохранённую историю
 можно подхватить флагом ``--history <имя>`` или командой ``load <имя>``
-в интерактивном режиме. История сохраняется автоматически и всегда:
-после каждого ответа модели и ещё раз при завершении работы. Список
-последних историй выводится командой ``histories`` или флагом
-``--list-histories``.
+в интерактивном режиме. При загрузке истории пользователю показываются
+её последние сообщения (количество настраивается). История сохраняется
+автоматически и всегда: после каждого ответа модели и ещё раз при
+завершении работы. Список последних историй выводится командой
+``histories`` или флагом ``--list-histories``.
+
+Все сообщения диалога (текст модели, вызовы инструментов, результаты их
+работы) выводятся через единую функцию форматирования :func:`format_display`;
+интерактивный режим получает их по мере появления из асинхронного
+генератора :meth:`Agent.send_with`.
 
 Коды возврата: ``0`` — успех, ``1`` — ошибка выполнения,
 ``2`` — ошибка конфигурации.
@@ -58,10 +66,13 @@ from ai import (  # type: ignore[no-redef]
     TextMessage,
     Tool,
     ToolRegistry,
+    ToolResultMessage,
+    ToolsMessage,
 )
 
 __all__ = [
     "build_agent",
+    "format_display",
     "run_interactive",
     "parse_args",
     "main",
@@ -73,6 +84,7 @@ __all__ = [
     "save_history",
     "load_history",
     "print_histories",
+    "print_last_messages",
 ]
 
 load_dotenv()
@@ -82,6 +94,7 @@ APP_VERSION = "1.0.0"
 DEFAULT_MODEL = "openrouter/auto"
 ENV_API_KEY = "OPENROUTER_API_KEY"
 ENV_MODEL = "OPENROUTER_MODEL"
+ENV_SHOW_MESSAGES = "BAYLANG_SHOW_MESSAGES"
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
@@ -92,6 +105,11 @@ APP_DIR = Path.home() / ".baylang"
 DEFAULT_PROMPT_FILE = APP_DIR / "prompt.txt"
 HISTORY_DIR = APP_DIR / "history"
 HISTORY_LIST_LIMIT = 10
+
+# Сколько последних сообщений показывать при загрузке истории.
+# Переопределяется аргументом --show-messages или переменной
+# окружения BAYLANG_SHOW_MESSAGES (приоритет: аргумент > env > default).
+DEFAULT_SHOW_MESSAGES = 10
 
 # Логи работы приложения: ротация, чтобы файл не разрастался бесконечно.
 LOG_DIR = APP_DIR / "logs"
@@ -119,6 +137,67 @@ HELP_TEXT = """\
 логи: ~/.baylang/logs/baylang.log."""
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Форматирование вывода
+# ---------------------------------------------------------------------------
+
+ROLE_LABELS = {
+    TextMessage.ROLE_USER: "you",
+    TextMessage.ROLE_AI: "assistant",
+    TextMessage.ROLE_SYSTEM: "system",
+    TextMessage.ROLE_TOOL: "tool",
+}
+
+def format_display(message: TextMessage) -> str:
+    """Отформатировать сообщение диалога для вывода пользователю.
+
+    Единая точка форматирования всех сообщений: текст модели, реплики
+    пользователя, системные сообщения, вызовы инструментов и результаты
+    их работы. Результат инструмента показывается как ``tool[<id>] > ...``,
+    вызовы инструментов — многострочно с аргументами и идентификаторами,
+    остальные сообщения — с меткой роли (``you``, ``assistant``, ``system``).
+
+    Args:
+        message: Сообщение диалога (:class:`TextMessage` или его наследник
+            :class:`ToolResultMessage` / :class:`ToolsMessage`).
+
+    Returns:
+        Строка, готовая к печати.
+    """
+    if isinstance(message, ToolResultMessage):
+        content = message.content.strip()
+        if not content:
+            return f"tool[{message.tool_id}]> (пустой результат)"
+        return f"tool[{message.tool_id}]> {content}"
+
+    if isinstance(message, ToolsMessage):
+        lines: list[str] = []
+        content = message.content.strip()
+        if content:
+            lines.append(f"assistant> {content}")
+        items: list[str] = []
+        for index, tool in enumerate(message.tools or [], start=1):
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function") or {}
+            name = function.get("name") or "?"
+            arguments = function.get("arguments") or "{}"
+            tool_id = tool.get("id") or f"tool_{index}"
+            items.append(f"  ⚙ {name}({arguments}) — id={tool_id}")
+        if calls:
+            lines.append("assistant> вызывает инструменты:")
+            lines.extend(items)
+        if not lines:
+            return "assistant> (вызовы инструментов без данных)"
+        return "\n".join(lines)
+
+    label = ROLE_LABELS.get(message.role, message.role)
+    content = message.content.strip()
+    if not content:
+        return f"{label}> (пустое сообщение)"
+    return f"{label}> {content}"
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +405,34 @@ def load_history(agent: Agent, name: str) -> int:
     return len(agent.context)
 
 
+def print_last_messages(context: Context, count: Optional[int] = None) -> None:
+    """Показать последние сообщения загруженного контекста.
+
+    Использует общую функцию форматирования :func:`format_display`:
+    текст модели, вызовы инструментов и результаты их работы выводятся
+    одинаково — так пользователь сразу видит, чем закончилась предыдущая
+    часть диалога.
+
+    Args:
+        context: Диалоговый контекст (обычно — только что загруженный).
+        count: Сколько последних сообщений показать; ``None`` — значение
+            по умолчанию (:data:`DEFAULT_SHOW_MESSAGES`).
+    """
+    if count is None:
+        count = DEFAULT_SHOW_MESSAGES
+    messages = context.last_messages(count)
+    total = len(context)
+    if not messages:
+        print("(контекст пуст)")
+        return
+    print(f"--- Последние сообщения ({len(messages)} из {total}) ---")
+    for message in messages:
+        if isinstance(message, ToolResultMessage):
+            continue
+        print(format_display(message))
+    print("--- Конец истории ---")
+
+
 def print_histories(limit: int = HISTORY_LIST_LIMIT) -> None:
     """Вывести список последних историй (имя, дата, размер)."""
     files = list_histories(limit)
@@ -371,6 +478,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--show-messages",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "сколько последних сообщений показывать при загрузке истории "
+            f"(по умолчанию: {DEFAULT_SHOW_MESSAGES}, env {ENV_SHOW_MESSAGES})"
+        ),
+    )
+    parser.add_argument(
         "--list-histories",
         "--list",
         action="store_true",
@@ -399,6 +516,46 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         version=f"{APP_NAME} {APP_VERSION}",
     )
     return parser.parse_args(argv)
+
+
+def get_show_messages(args: argparse.Namespace) -> int:
+    """Определить число последних сообщений для показа при загрузке истории.
+
+    Приоритет: аргумент ``--show-messages`` > переменная окружения
+    ``BAYLANG_SHOW_MESSAGES`` > значение по умолчанию.
+
+    Args:
+        args: Аргументы командной строки (:func:`parse_args`).
+
+    Returns:
+        Положительное число сообщений (некорректные значения заменяются
+        значением по умолчанию).
+    """
+    value = args.show_messages
+    if value is None:
+        env_value = os.environ.get(ENV_SHOW_MESSAGES, "").strip()
+        if env_value:
+            try:
+                value = int(env_value)
+            except ValueError:
+                logger.warning(
+                    "Некорректное значение %s=%r, используется %d",
+                    ENV_SHOW_MESSAGES,
+                    env_value,
+                    DEFAULT_SHOW_MESSAGES,
+                )
+                value = None
+    if value is None:
+        return DEFAULT_SHOW_MESSAGES
+    if value < 1:
+        logger.warning(
+            "Число сообщений для показа должно быть >= 1, получено %d; "
+            "используется %d",
+            value,
+            DEFAULT_SHOW_MESSAGES,
+        )
+        return DEFAULT_SHOW_MESSAGES
+    return value
 
 
 def mask_api_key(key: str) -> str:
@@ -500,6 +657,13 @@ async def run_interactive(
     ответа модели история сессии автоматически сохраняется в JSON pretty
     с именем ``<history_name>.json`` (метка времени сессии).
 
+    Сообщения выводятся через единую функцию форматирования
+    :func:`format_display`: текст модели, вызовы инструментов и результаты
+    их выполнения приходят из асинхронного генератора :meth:`Agent.send_with`
+    и печатаются по мере появления. При загрузке истории показываются её
+    последние сообщения (количество — из настроек ``--show-messages`` /
+    ``BAYLANG_SHOW_MESSAGES``).
+
     Args:
         agent: Агент.
         args: Аргументы командной строки.
@@ -511,7 +675,8 @@ async def run_interactive(
     """
     if history_name is None:
         history_name = new_session_name()
-    logger.info("Сессия %s", history_name)
+    show_messages = get_show_messages(args)
+    logger.info("Сессия %s (показ сообщений при загрузке: %d)", history_name, show_messages)
     print(
         f"{APP_NAME} {APP_VERSION}. Справка: help; история: histories/save/load; "
         "очистка контекста: clear; выход: exit."
@@ -578,7 +743,13 @@ async def run_interactive(
                 logger.warning("Не удалось загрузить историю %r: %s", rest, exc)
                 continue
             print(f"История загружена: {count} сообщений.")
-            logger.info("История %r загружена: %d сообщений", rest, count)
+            print_last_messages(agent.context, show_messages)
+            logger.info(
+                "История %r загружена: %d сообщений (показано %d)",
+                rest,
+                count,
+                show_messages,
+            )
             continue
         if command == "histories" or command == "list":
             print_histories()
@@ -587,7 +758,8 @@ async def run_interactive(
         started = time.perf_counter()
         agent.context.add_message(TextMessage.user(line))
         try:
-            text = await agent.send()
+            async for message in agent.send_with():
+                print(format_display(message))
         except ProviderError as exc:
             print(f"assistant> Ошибка запроса: {exc}")
             print("Проверьте сеть и API-ключ, затем попробуйте ещё раз.")
@@ -598,7 +770,6 @@ async def run_interactive(
             logger.error("Ошибка: %s", exc)
             continue
         elapsed = time.perf_counter() - started
-        print(f"assistant> {text}")
         logger.info(
             "Ответ модели получен за %.2f с%s",
             elapsed,
@@ -616,9 +787,12 @@ async def run_app(args: argparse.Namespace) -> int:
     """Выполнить приложение: сборка агента, режим работы, автосохранение.
 
     По умолчанию стартует новая сессия; старая история загружается только
-    по ``--history`` или команде ``load``. История сохраняется всегда:
-    автоматически после каждого ответа и ещё раз в блоке ``finally``
-    при завершении (имя файла — метка времени сессии, формат JSON pretty).
+    по ``--history`` или командой ``load`` — при загрузке пользователю
+    показываются последние сообщения истории (количество задаётся
+    настройкой ``--show-messages`` / ``BAYLANG_SHOW_MESSAGES``). История
+    сохраняется всегда: автоматически после каждого ответа и ещё раз в
+    блоке ``finally`` при завершении (имя файла — метка времени сессии,
+    формат JSON pretty).
 
     Args:
         args: Аргументы командной строки.
@@ -652,6 +826,8 @@ async def run_app(args: argparse.Namespace) -> int:
             f"Загружена история '{args.history}': {count} сообщений.",
             file=sys.stderr,
         )
+        # Показать последние сообщения загруженной истории.
+        print_last_messages(agent.context, get_show_messages(args))
         logger.info("Загружена история %r: %d сообщений", args.history, count)
 
     if args.verbose:

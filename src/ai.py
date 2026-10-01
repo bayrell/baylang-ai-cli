@@ -3,11 +3,18 @@
 Модуль содержит базовые абстракции библиотеки:
 
 * :class:`TextMessage`, :class:`ToolResultMessage`, :class:`ToolsMessage` —
-  сообщения диалога в формате OpenAI-совместимого API;
+  сообщения диалога в формате OpenAI-совместимого API (текст модели,
+  вызовы инструментов и их результаты);
 * :class:`Context` — диалоговый контекст с ограничением длины и JSON-сериализацией;
 * :class:`Provider` / :class:`OpenRouterProvider` — асинхронные провайдеры LLM;
 * :class:`Tool` / :class:`ToolRegistry` — подсистема инструментов (function);
 * :class:`Agent` — агент с циклом ReAct и fallback-цепочкой провайдеров.
+
+Основной метод :meth:`Agent.send_with` — асинхронный генератор: он отдаёт
+каждое сообщение (текст модели, вызовы инструментов, результаты их работы)
+по мере появления, поэтому интерфейс может выводить их пользователю
+без задержки. Метод :meth:`Agent.send` собирает генератор и возвращает
+финальный текст ответа.
 
 Все сетевые операции выполняются асинхронно через ``httpx``; блокирующие
 вызовы в асинхронном контексте не используются.
@@ -180,13 +187,13 @@ class TextMessage:
             или :class:`ToolsMessage`.
 
         Raises:
-            ValueError: Если ``data`` не словарь или_ROLE сообщения
-                некорректен; для ``tool_result`` — если отсутствует
+            ValueError: Если ``data`` не словарь или роль сообщения
+                некорректна; для ``tool_result`` — если отсутствует
                 непустой ``tool_id``.
         """
         if not isinstance(data, dict):
             raise ValueError("Сообщение должно быть словарём")
-        message_type = data.get("type") or cls._infer_type(data)
+        message_type = data.get("type") or cls.infer_type(data)
         if message_type == ToolResultMessage.MESSAGE_TYPE:
             return ToolResultMessage.from_dict(data)
         if message_type == ToolsMessage.MESSAGE_TYPE:
@@ -383,7 +390,7 @@ class Context:
     Хранилище приватное; внешний доступ к списку сообщений возможен только
     через методы :meth:`add_message`, :meth:`get_data`, :meth:`to_dict`,
     :meth:`to_json`, :meth:`trim`, :meth:`clear`, :meth:`truncate`,
-    :meth:`last_response`, а также итерацию и ``len()``.
+    :meth:`last_response`, :meth:`last_messages`, а также итерацию и ``len()``.
 
     Контекст можно сохранять в JSON (:meth:`to_json`) и восстанавливать
     из него (:meth:`from_json`) — tool-цепочки сохраняются полностью.
@@ -539,6 +546,23 @@ class Context:
                 return item
         return None
 
+    def last_messages(self, count: int) -> list[TextMessage]:
+        """Вернуть последние ``count`` сообщений контекста.
+
+        Используется для показа пользователю последних сообщений
+        при загрузке истории диалога.
+
+        Args:
+            count: Сколько последних сообщений вернуть.
+
+        Returns:
+            Список сообщений (от старых к новым); пустой список,
+            если ``count <= 0`` или контекст пуст.
+        """
+        if count <= 0 or not self.items:
+            return []
+        return list(self.items[-count:])
+
     def __iter__(self):
         """Итерировать по копии списка сообщений."""
         return iter(list(self.items))
@@ -601,6 +625,7 @@ class Provider(abc.ABC):
         self.temperature = temperature
         self.fallback_iters = 100
         self.delay = 5
+        self.client: Optional[httpx.AsyncClient] = None
 
     @abc.abstractmethod
     def get_url(self) -> str:
@@ -1119,15 +1144,20 @@ class Agent:
         self.last_response: Optional[ProviderResponse] = None
         self.delay = 5
 
-    async def send_with(self) -> str:
-        """Основной цикл ReAct с указанным провайдером.
+    async def send_with(self) -> AsyncIterator[TextMessage]:
+        """Основной цикл ReAct: отдаёт сообщения по мере их появления.
 
-        Args:
-            provider: Провайдер, через который выполняется запрос.
-            ctx: Диалоговый контекст.
+        Асинхронный генератор: каждое сообщение (текст модели, вызовы
+        инструментов, результаты их выполнения) добавляется в контекст
+        и сразу отдаётся вызывающему коду — например, интерактивному
+        режиму, который печатает его пользователю.
 
-        Returns:
-            Текст финального ответа модели.
+        Yields:
+            Сообщения диалога:
+
+            * :class:`ToolsMessage` — модель вызывает инструменты;
+            * :class:`ToolResultMessage` — результат выполнения инструмента;
+            * :class:`TextMessage` — финальный текстовый ответ модели.
 
         Raises:
             ProviderError: Если провайдер завершился ошибкой или модель
@@ -1143,17 +1173,16 @@ class Agent:
                 self.context.truncate(snapshot)
                 raise
             self.last_response = response
-            
+
             text = response.text.strip()
-            if text != "":
-                self.context.add_message(
-                    TextMessage.assistant(text)
-                )
-            
+
             if response.tools:
-                self.context.add_message(
-                    ToolsMessage(response.text, response.tools)
-                )
+                # Ответ с вызовами инструментов: показываем их пользователю,
+                # выполняем каждый инструмент и отдаём результат.
+                tools_message = ToolsMessage(text, response.tools)
+                self.context.add_message(tools_message)
+                yield tools_message
+
                 for tool in response.tools:
                     name, arguments, tool_id = parse_tool(tool, len(self.context))
                     try:
@@ -1166,35 +1195,46 @@ class Agent:
                     except ToolError as exc:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
-                    self.context.add_message(ToolResultMessage(result_text, tool_id=tool_id))
-                
+                    result_message = ToolResultMessage(result_text, tool_id=tool_id)
+                    self.context.add_message(result_message)
+                    yield result_message
+
                 await asyncio.sleep(self.delay)
                 continue
 
-            return text
+            if text:
+                message = TextMessage.assistant(text)
+                self.context.add_message(message)
+                yield message
+            return
 
         self.context.truncate(snapshot)
         raise ProviderError(f"Модель не вернула финальный ответ за {self.max_iters} итераций")
 
     async def send(self) -> str:
-        """Отправить запрос через основной провайдер.
+        """Отправить запрос и вернуть финальный текст ответа модели.
 
-        Args:
-            context: Диалоговый контекст; по умолчанию — внутренний контекст
-                агента.
+        Обёртка над :meth:`send_with`: собирает сообщения генератора
+        и возвращает текст последнего текстового ответа ассистента.
 
         Returns:
-            Текст финального ответа модели.
+            Текст финального ответа модели (пустая строка, если модель
+            вернула пустой ответ).
 
         Raises:
             ProviderError: При ошибке провайдера или исчерпании итераций.
         """
-        return await self.send_with()
-    
+        text = ""
+        async for message in self.send_with():
+            if message.MESSAGE_TYPE == TextMessage.MESSAGE_TYPE:
+                text = message.content
+        return text
+
     async def disconnect(self):
+        """Закрыть соединения провайдера."""
         if self.provider:
             await self.provider.aclose()
-    
+
     def reset(self) -> None:
         """Очистить контекст и внутреннее состояние для новой сессии."""
         self.context.clear()
