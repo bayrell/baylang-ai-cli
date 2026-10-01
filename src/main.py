@@ -425,12 +425,12 @@ def print_last_messages(context: Context, count: Optional[int] = None) -> None:
     if not messages:
         print("(контекст пуст)")
         return
-    print(f"--- Последние сообщения ({len(messages)} из {total}) ---")
     for message in messages:
         if isinstance(message, ToolResultMessage):
             continue
+        if isinstance(message, TextMessage) and message.role == TextMessage.ROLE_SYSTEM:
+            continue
         print(format_display(message))
-    print("--- Конец истории ---")
 
 
 def print_histories(limit: int = HISTORY_LIST_LIMIT) -> None:
@@ -856,12 +856,6 @@ async def run_app(args: argparse.Namespace) -> int:
         logger.error("Ошибка: %s", exc)
         exit_code = EXIT_RUNTIME_ERROR
     finally:
-        # История сохраняется всегда — при любом способе завершения.
-        try:
-            save_history(agent, name=session_name)
-        except (OSError, ValueError) as exc:
-            print(f"Не удалось сохранить историю: {exc}", file=sys.stderr)
-            logger.warning("Не удалось сохранить историю сессии %s: %s", session_name, exc)
         await agent.disconnect()
         logger.info("Сессия %s завершена с кодом %d", session_name, exit_code)
     return exit_code
