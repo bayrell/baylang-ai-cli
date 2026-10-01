@@ -186,7 +186,7 @@ def format_display(message: TextMessage) -> str:
             arguments = function.get("arguments") or "{}"
             tool_id = tool.get("id") or f"tool_{index}"
             items.append(f"  ⚙ {name}({arguments}) — id={tool_id}")
-        if calls:
+        if items:
             lines.append("assistant> вызывает инструменты:")
             lines.extend(items)
         if not lines:
