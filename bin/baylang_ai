@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Консольный скрипт запуска BayLang AI (CLI).
+
+Запускает интерактивный чат BayLang AI с файловыми инструментами ``fs_*``,
+историями диалогов и логированием. Работает в двух режимах:
+
+* **установленный пакет** — импортируется модуль ``baylang_ai.main``
+  (после ``pip install .`` пакет виден откуда угодно; этот же скрипт
+  устанавливается командой ``pip`` как ``bin/baylang_ai``);
+* **прямой запуск из репозитория** — каталог ``src/`` рядом со скриптом
+  добавляется в ``sys.path``, и запускается модуль ``main``
+  (то же самое делает ``python src/main.py``).
+
+Все аргументы командной строки передаются приложению без изменений
+(список — ``./bin/baylang_ai --help``). Коды возврата: ``0`` — успех,
+``1`` — ошибка выполнения, ``2`` — ошибка конфигурации.
+
+Примеры::
+
+    ./bin/baylang_ai                          # новая сессия
+    ./bin/baylang_ai --model openai/gpt-4o-mini
+    ./bin/baylang_ai --history my-chat        # продолжить сохранённый диалог
+    ./bin/baylang_ai --list-histories         # список историй и выход
+"""
+
+from __future__ import annotations
+
+import importlib
+import sys
+from pathlib import Path
+from types import ModuleType
+
+#: Каталог с исходниками рядом со скриптом (репозиторий: <корень>/src).
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+
+
+def load_entry_module() -> ModuleType:
+    """Загрузить модуль с точкой входа приложения.
+
+    Сначала импортируется установленный пакет ``baylang_ai``; если его нет,
+    каталог ``src/`` добавляется в ``sys.path`` и импортируется модуль
+    ``main`` (прямой запуск из репозитория).
+
+    Returns:
+        Модуль с функцией ``main()`` (``baylang_ai.main`` или ``main``).
+
+    Raises:
+        SystemExit: Если не найден ни установленный пакет ``baylang_ai``,
+            ни каталог ``src/`` рядом со скриптом (код 2).
+    """
+    try:
+        return importlib.import_module("baylang_ai.main")
+    except ModuleNotFoundError as exc:
+        # Fallback нужен только при отсутствии самого пакета: нехватку
+        # зависимостей (httpx, dotenv) не маскируем, а показываем как есть.
+        if exc.name not in ("baylang_ai", "baylang_ai.main"):
+            raise
+    if not (SRC_DIR / "main.py").is_file():
+        sys.stderr.write(
+            "Ошибка: не найден ни установленный пакет baylang_ai, "
+            f"ни каталог с исходниками {SRC_DIR}.\n"
+            "Установите пакет: pip install .\n"
+        )
+        raise SystemExit(2)
+    sys.path.insert(0, str(SRC_DIR))
+    return importlib.import_module("main")
+
+
+def main() -> int:
+    """Запустить приложение BayLang AI, передав аргументы CLI без изменений.
+
+    Returns:
+        Код выхода процесса: ``0`` — успех, ``1`` — ошибка выполнения,
+        ``2`` — ошибка конфигурации.
+    """
+    entry = load_entry_module()
+    return int(entry.main())
+
+
+if __name__ == "__main__":
+    sys.exit(main())
