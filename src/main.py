@@ -98,7 +98,7 @@ HELP_TEXT = """\
 Команды:
   help                — показать эту справку
   clear               — очистить контекст диалога
-  model <имя>         — сменить модель на лету (например: model openai/gpt-4o-mini)
+  model <имя>         — сменить модель на лету (например: model openrouter/auto)
   save [имя]          — сохранить историю под другим именем (по умолчанию — метка времени)
   load <имя>          — загрузить историю из ~/.baylang/history
   histories           — список последних историй
@@ -176,7 +176,7 @@ def new_session_name() -> str:
     """Вернуть метку времени для имени файла истории текущей сессии.
 
     Returns:
-        Строка вида ``YYYYMMDD_HHMMSS`` (timestamp).
+        Строка вида timestamp.
     """
     return str(round(datetime.now().timestamp()))
 
@@ -203,8 +203,7 @@ def save_history(agent: Agent, name: Optional[str] = None) -> Path:
 
     Args:
         agent: Агент, чей контекст сохраняется.
-        name: Имя истории; ``None`` — метка времени в формате
-            ``YYYYMMDD_HHMMSS`` (timestamp).
+        name: Имя истории; ``None`` — метка времени в формате timestamp.
 
     Returns:
         Путь к сохранённому файлу истории.
@@ -301,18 +300,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         description=f"{APP_NAME} {APP_VERSION} — чат с LLM через OpenRouter",
     )
     parser.add_argument(
-        "--prompt",
-        help="одноразовый запрос: выполнить и завершиться (без интерактивного режима)",
-    )
-    parser.add_argument(
         "--model",
         help=f"модель OpenRouter (по умолчанию: {DEFAULT_MODEL}, env {ENV_MODEL})",
     )
     parser.add_argument(
-        "--prompt-file",
-        help=f"файл системного промпта (по умолчанию: {DEFAULT_PROMPT_FILE})",
-    )
-    parser.add_argument(
+        "--load",
         "--history",
         metavar="ИМЯ",
         help=(
@@ -321,6 +313,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--list",
         "--list-histories",
         action="store_true",
         help="вывести список последних историй и завершиться",
@@ -328,19 +321,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-iters",
         type=int,
-        default=5,
-        help="максимум итераций tool (по умолчанию: 5)",
+        default=100,
+        help="максимум итераций tool (по умолчанию: 100)",
     )
     parser.add_argument(
         "--temperature",
         type=float,
         default=0.7,
         help="температура генерации (по умолчанию: 0.7)",
-    )
-    parser.add_argument(
-        "--no-tools",
-        action="store_true",
-        help="не регистрировать демонстрационные инструменты",
     )
     parser.add_argument(
         "--verbose",
@@ -596,18 +584,7 @@ async def run_app(args: argparse.Namespace) -> int:
 
     exit_code = EXIT_OK
     try:
-        if args.prompt:
-            started = time.perf_counter()
-            text = await _send_with_retry(agent, args.prompt)
-            print(text)
-            if args.verbose:
-                print(
-                    f"[verbose] время ответа: {time.perf_counter() - started:.2f} "
-                    f"с{usage_suffix(agent)}",
-                    file=sys.stderr,
-                )
-        else:
-            exit_code = await run_interactive(agent, args, history_name=session_name)
+        exit_code = await run_interactive(agent, args, history_name=session_name)
     except KeyboardInterrupt:
         print("\nДо встречи! 👋")
         exit_code = EXIT_OK
