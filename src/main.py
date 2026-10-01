@@ -33,9 +33,16 @@
 завершении работы. Список последних историй выводится командой
 ``histories`` или флагом ``--list-histories``.
 
+Агенту регистрируются **файловые инструменты** (пакет ``src/tools``):
+``fs_list``, ``fs_find``, ``fs_search_regex``, ``fs_create``, ``fs_edit``,
+``fs_rename``, ``fs_delete``. Они ограничены рабочей директорией запуска
+(песочницей) — доступ ко всей файловой системе модель не получает.
+
 Все сообщения диалога (текст модели, вызовы инструментов, результаты их
 работы) выводятся через единую функцию форматирования :func:`format_display`;
-интерактивный режим получает их по мере появления из асинхронного
+результаты инструментов ``fs_*`` дополнительно форматируются собственным
+``format_message`` каждого класса (через ``format_tool_payload``).
+Интерактивный режим получает сообщения по мере появления из асинхронного
 генератора :meth:`Agent.send_with`.
 
 Коды возврата: ``0`` — успех, ``1`` — ошибка выполнения,
@@ -68,6 +75,11 @@ from ai import (  # type: ignore[no-redef]
     ToolRegistry,
     ToolResultMessage,
     ToolsMessage,
+)
+from tools import (  # type: ignore[no-redef]
+    FS_TOOLS_HINT,
+    format_tool_payload,
+    register_fs_tools,
 )
 
 __all__ = [
@@ -159,6 +171,11 @@ def format_display(message: TextMessage) -> str:
     вызовы инструментов — многострочно с аргументами и идентификаторами,
     остальные сообщения — с меткой роли (``you``, ``assistant``, ``system``).
 
+    Для результатов файловых инструментов (``fs_*``) используется их
+    собственный ``format_message``: JSON с полем ``tool`` распознаётся
+    через ``format_tool_payload`` и превращается в человекочитаемый вид.
+    Если распознать результат не удалось, выводится сырое содержимое.
+
     Args:
         message: Сообщение диалога (:class:`TextMessage` или его наследник
             :class:`ToolResultMessage` / :class:`ToolsMessage`).
@@ -167,6 +184,9 @@ def format_display(message: TextMessage) -> str:
         Строка, готовая к печати.
     """
     if isinstance(message, ToolResultMessage):
+        custom = format_tool_payload(message.content)
+        if custom:
+            return f"tool[{message.tool_id}]> {custom}"
         content = message.content.strip()
         if not content:
             return f"tool[{message.tool_id}]> (пустой результат)"
@@ -587,6 +607,11 @@ def build_agent(args: argparse.Namespace) -> Agent:
     модель — из ``--model`` или ``OPENROUTER_MODEL``. Системный промпт
     загружается из файла (по умолчанию ``~/.baylang/prompt.txt``).
 
+    Агенту регистрируются файловые инструменты ``fs_*`` (пакет ``src/tools``)
+    с корнем-песочницей — текущей рабочей директорией запуска. Модель
+    получает доступ только к файлам внутри неё; в системный промпт
+    добавляется подсказка :data:`tools.FS_TOOLS_HINT` со списком инструментов.
+
     Args:
         args: Аргументы командной строки (:func:`parse_args`).
 
@@ -612,13 +637,21 @@ def build_agent(args: argparse.Namespace) -> Agent:
         temperature=args.temperature,
     )
     registry = ToolRegistry()
+    registered_tools = register_fs_tools(registry, root=Path.cwd())
     agent = Agent(
         provider=provider,
         tools=registry,
         max_iters=args.max_iters,
     )
-    agent.context.add_message(TextMessage.system(system_prompt))
-    logger.info("Агент собран: модель %s, ключ API %s", model, mask_api_key(api_key))
+    agent.context.add_message(
+        TextMessage.system(f"{system_prompt}\n\n{FS_TOOLS_HINT}")
+    )
+    logger.info(
+        "Агент собран: модель %s, ключ API %s; инструменты: %s",
+        model,
+        mask_api_key(api_key),
+        ", ".join(registered_tools) or "нет",
+    )
     return agent
 
 
@@ -727,7 +760,7 @@ async def run_interactive(
                 continue
             except OSError as exc:
                 print(f"Не удалось сохранить историю: {exc}")
-                logger.warning("Не удалось сохранить историю: %s", exc)
+                logger.warning("Не удалось сохранить историю: {exc}")
                 continue
             print(f"История сохранена: {path}")
             logger.info("История сохранена: %s", path)

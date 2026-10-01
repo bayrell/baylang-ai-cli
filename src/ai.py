@@ -964,7 +964,12 @@ class Tool:
                 "parameters": self.parameters_schema,
             },
         }
-
+    
+    def format_message(self, params: Optional[dict[str, Any]] = None) -> str:
+        """
+        Форматирует сообщение для пользователя
+        """
+    
     async def execute(self, params: Optional[dict[str, Any]] = None) -> Any:
         """Выполнить инструмент с переданными параметрами.
 
