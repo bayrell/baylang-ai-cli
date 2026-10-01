@@ -5,12 +5,13 @@
 инструментов ``fs_*``.
 
 :class:`FsTool` **наследует** :class:`~ai.Tool` и реализует его контракт
-(``name`` / ``description`` / ``parameters_schema`` / :meth:`~ai.Tool.get_schema`
-/ :meth:`~ai.Tool.execute`), поэтому экземпляр конкретного инструмента
-регистрируется в :class:`~ai.ToolRegistry` напрямую, без дополнительной
-обёртки ``Tool(...)``. Атрибуты ``name``, ``description`` и
-``parameters_schema`` заполняются из классовых :attr:`FsTool.NAME`,
-:attr:`FsTool.DESCRIPTION` и :attr:`FsTool.PARAMETERS` при инициализации.
+(``name`` / ``description`` / ``parameters_schema`` / ``hint`` /
+:meth:`~ai.Tool.get_schema` / :meth:`~ai.Tool.execute`), поэтому экземпляр
+конкретного инструмента регистрируется в :class:`~ai.ToolRegistry` напрямую,
+без дополнительной обёртки ``Tool(...)``. Атрибуты ``name``, ``description``,
+``parameters_schema`` и ``hint`` заполняются из классовых :attr:`FsTool.NAME`,
+:attr:`FsTool.DESCRIPTION`, :attr:`FsTool.PARAMETERS` и :attr:`FsTool.HINT`
+при инициализации.
 
 Изоляция файловой системы. Инструменты работают **только** внутри рабочей
 директории (``root`` — текущая папка процесса). Любой пользовательский путь
@@ -29,6 +30,8 @@
 Контракт инструмента. Каждый инструмент — наследник :class:`FsTool`
 в отдельном файле (один файл — один класс) и реализует:
 
+* :attr:`FsTool.HINT` — подсказка для системного промпта (собирается
+  реестром через :meth:`~ai.ToolRegistry.build_hint`);
 * :meth:`FsTool.run` — асинхронное выполнение операции; возвращает
   структурированный словарь ``{"tool": имя, "status": "ok"/"error", ...}``;
 * :meth:`FsTool.format_message` — метод форматирования результата для вывода
@@ -54,6 +57,7 @@ __all__ = [
     "MAX_FILE_SIZE",
     "MAX_LIST_ENTRIES",
     "MAX_TEXT_SIZE",
+    "SANDBOX_NOTE",
 ]
 
 #: Максимальный размер читаемого/редактируемого файла (1 МБ).
@@ -96,13 +100,14 @@ def human_size(size: int) -> str:
 class FsTool(Tool, abc.ABC):
     """Базовый класс файлового инструмента с песочницей рабочей директории.
 
-    Наследует :class:`~ai.Tool`: имя, описание и JSON-схема параметров
-    берутся из классовых :attr:`NAME`, :attr:`DESCRIPTION` и
-    :attr:`PARAMETERS`, а обработчиком инструмента служит его
-    :meth:`run`. Благодаря этому экземпляр наследника регистрируется
-    в :class:`~ai.ToolRegistry` напрямую (``registry.register(instance)``).
+    Наследует :class:`~ai.Tool`: имя, описание, JSON-схема параметров
+    и подсказка системного промпта берутся из классовых :attr:`NAME`,
+    :attr:`DESCRIPTION`, :attr:`PARAMETERS` и :attr:`HINT`, а обработчиком
+    инструмента служит его :meth:`run`. Благодаря этому экземпляр наследника
+    регистрируется в :class:`~ai.ToolRegistry` напрямую
+    (``registry.register(instance)``).
 
-    Наследник реализует :meth:`run` и :meth:`format_message`.
+    Наследник реализует :attr:`HINT`, :meth:`run` и :meth:`format_message`.
 
     Args:
         root: Корень песочницы (рабочая директория); ``None`` — текущая
@@ -122,6 +127,9 @@ class FsTool(Tool, abc.ABC):
 
     #: JSON-схема параметров в формате OpenAI Function.
     PARAMETERS: ClassVar[dict[str, Any]] = {"type": "object", "properties": {}}
+
+    #: Подсказка для системного промпта (короткая строка о сути инструмента).
+    HINT: ClassVar[str] = ""
 
     #: Имена файлов/папок, полностью закрытых от инструментов (секреты).
     DENIED_NAMES: ClassVar[frozenset[str]] = frozenset({".env"})
@@ -143,6 +151,7 @@ class FsTool(Tool, abc.ABC):
             description=self.DESCRIPTION,
             parameters_schema=dict(self.PARAMETERS),
             handler=self.run,
+            hint=self.HINT,
         )
 
     async def execute(  # type: ignore[override]

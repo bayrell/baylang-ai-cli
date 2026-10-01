@@ -915,6 +915,12 @@ class Tool:
     Обработчик вызывается с именованными аргументами (``handler(**params)``)
     и может быть как синхронной, так и асинхронной функцией.
 
+    Помимо схемы для API, инструмент несёт **подсказку** (:meth:`hint`) —
+    короткое описание для системного промпта. :meth:`ToolRegistry.build_hint`
+    собирает подсказки всех инструментов в единую секцию промпта, поэтому
+    текст подсказки живёт рядом с кодом инструмента и не разъезжается
+    с его реальным поведением.
+
     Args:
         name: Уникальное имя инструмента (латиницей, без пробелов).
         description: Описание для модели.
@@ -922,6 +928,8 @@ class Tool:
             По умолчанию — пустая схема ``{"type": "object"}``.
         handler: Реализация инструмента. Если ``None``, :meth:`execute`
             бросит :class:`ToolError`.
+        hint: Подсказка для системного промпта. Если пуста,
+            :meth:`hint` вернёт ``description``.
 
     Raises:
         ConfigurationError: Если ``name`` или ``description`` пусты.
@@ -933,6 +941,7 @@ class Tool:
         description: str,
         parameters_schema: Optional[dict[str, Any]] = None,
         handler: Optional[Callable[..., Any]] = None,
+        hint: str = "",
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ConfigurationError("Инструмент должен иметь непустое имя (name)")
@@ -949,6 +958,7 @@ class Tool:
                 f"parameters_schema инструмента {name!r} должен быть словарём"
             )
         self.handler = handler
+        self._hint = hint.strip() if isinstance(hint, str) else ""
 
     def get_schema(self) -> dict[str, Any]:
         """Вернуть схему инструмента в формате OpenAI Function.
@@ -964,12 +974,26 @@ class Tool:
                 "parameters": self.parameters_schema,
             },
         }
-    
+
+    def hint(self) -> str:
+        """Вернуть подсказку инструмента для системного промпта.
+
+        Подсказка — короткая строка (обычно вида ``имя: что делает``),
+        которая попадает в общий промпт через
+        :meth:`ToolRegistry.build_hint`. Наследник может переопределить
+        метод для динамической подсказки (например, с учётом песочницы).
+
+        Returns:
+            Текст подсказки; если подсказка не задана явно,
+            возвращается ``description``.
+        """
+        return self._hint or self.description
+
     def format_message(self, params: Optional[dict[str, Any]] = None) -> str:
         """
         Форматирует сообщение для пользователя
         """
-    
+
     async def execute(self, params: Optional[dict[str, Any]] = None) -> Any:
         """Выполнить инструмент с переданными параметрами.
 
@@ -1011,7 +1035,8 @@ class ToolRegistry:
     """Реестр инструментов агента.
 
     Хранит инструменты по уникальному имени, позволяет строить схемы
-    для запроса к модели и выполнять вызовы по имени.
+    для запроса к модели, собирать общий промпт из подсказок инструментов
+    (:meth:`build_hint`) и выполнять вызовы по имени.
     """
 
     def __init__(self) -> None:
@@ -1049,6 +1074,42 @@ class ToolRegistry:
             Список схем в формате OpenAI Function.
         """
         return [tool.get_schema() for tool in self.tools.values()]
+
+    def build_hint(self, intro: str = "", footer: str = "") -> str:
+        """Собрать общий промпт из подсказок (:meth:`Tool.hint`) инструментов.
+
+        Каждый инструмент даёт свою строку подсказки, а реестр собирает
+        из них единую секцию системного промпта вида::
+
+            <intro>
+            - <имя>: <подсказка>
+            ...
+            <footer>
+
+        Так список инструментов в промпте всегда соответствует реестру:
+        зарегистрирован новый инструмент — его подсказка автоматически
+        попадает в промпт; удалён — исчезает из него.
+
+        Args:
+            intro: Заголовок секции (например, «Доступны инструменты:»).
+                Пустая строка — не добавлять заголовок.
+            footer: Общее примечание после списка (например, правила
+                песочницы). Пустая строка — не добавлять примечание.
+
+        Returns:
+            Текст подсказки для системного промпта; пустая строка,
+            если в реестре нет инструментов.
+        """
+        if not self.tools:
+            return ""
+        lines: list[str] = []
+        if intro:
+            lines.append(intro.strip())
+        for tool in self.tools.values():
+            lines.append(f"- {tool.name}: {tool.hint()}")
+        if footer:
+            lines.append(footer.strip())
+        return "\n".join(lines)
 
     async def execute(self, name: str, params: Optional[dict[str, Any]] = None) -> Any:
         """Выполнить инструмент по имени.

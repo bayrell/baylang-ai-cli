@@ -29,6 +29,10 @@ class FindFileTool(FsTool):
         "(glob). Примеры шаблонов: '*.py', 'report_*.txt', 'test_?'. "
         "Поиск рекурсивный; служебные папки (.git, __pycache__) пропускаются."
     )
+    HINT = (
+        "поиск файлов и папок по glob-шаблону имени (например '*.py'); "
+        "рекурсивно"
+    )
     PARAMETERS = {
         "type": "object",
         "properties": {

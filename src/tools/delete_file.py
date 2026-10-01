@@ -29,6 +29,10 @@ class DeleteFileTool(FsTool):
         "удаляется только с recursive=true. Удаление необратимо — "
         "используйте после подтверждения пользователем."
     )
+    HINT = (
+        "удалить файл или папку (непустая папка — только с recursive=true; "
+        "удаление необратимо)"
+    )
     PARAMETERS = {
         "type": "object",
         "properties": {

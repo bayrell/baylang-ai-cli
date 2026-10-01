@@ -37,6 +37,8 @@
 ``fs_list``, ``fs_find``, ``fs_search_regex``, ``fs_create``, ``fs_edit``,
 ``fs_rename``, ``fs_delete``. Они ограничены рабочей директорией запуска
 (песочницей) — доступ ко всей файловой системе модель не получает.
+Подсказка системного промпта об инструментах собирается из их ``HINT``
+через :meth:`ToolRegistry.build_hint`.
 
 Все сообщения диалога (текст модели, вызовы инструментов, результаты их
 работы) выводятся через единую функцию форматирования :func:`format_display`;
@@ -77,7 +79,6 @@ from ai import (  # type: ignore[no-redef]
     ToolsMessage,
 )
 from tools import (  # type: ignore[no-redef]
-    FS_TOOLS_HINT,
     format_tool_payload,
     register_fs_tools,
 )
@@ -610,7 +611,10 @@ def build_agent(args: argparse.Namespace) -> Agent:
     Агенту регистрируются файловые инструменты ``fs_*`` (пакет ``src/tools``)
     с корнем-песочницей — текущей рабочей директорией запуска. Модель
     получает доступ только к файлам внутри неё; в системный промпт
-    добавляется подсказка :data:`tools.FS_TOOLS_HINT` со списком инструментов.
+    добавляется подсказка об инструментах, собираемая из их ``HINT``
+    через :meth:`ToolRegistry.build_hint` (заголовок
+    :data:`tools.FS_TOOLS_INTRO`, правило песочницы
+    :data:`tools.SANDBOX_NOTE`).
 
     Args:
         args: Аргументы командной строки (:func:`parse_args`).
@@ -638,13 +642,14 @@ def build_agent(args: argparse.Namespace) -> Agent:
     )
     registry = ToolRegistry()
     registered_tools = register_fs_tools(registry, root=Path.cwd())
+    tools_hint = registry.build_hint()
     agent = Agent(
         provider=provider,
         tools=registry,
         max_iters=args.max_iters,
     )
     agent.context.add_message(
-        TextMessage.system(f"{system_prompt}\n\n{FS_TOOLS_HINT}")
+        TextMessage.system(f"{system_prompt}\n\n{tools_hint}")
     )
     logger.info(
         "Агент собран: модель %s, ключ API %s; инструменты: %s",

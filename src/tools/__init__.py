@@ -24,13 +24,17 @@
 
 * ``execute(params)`` — асинхронное выполнение (точка входа
   :class:`~ai.Tool`), всегда возвращает словарь ``{"tool", "status", ...}``;
+* ``HINT`` — подсказка системного промпта; реестр собирает их в единую
+  секцию через :meth:`~ai.ToolRegistry.build_hint` (см. :data:`FS_TOOLS_INTRO`
+  и :data:`tools.base.SANDBOX_NOTE`);
 * ``format_message(data)`` — статический метод форматирования результата,
   который :func:`format_tool_payload` подставляет в ``format_display``.
 
-Регистрация в агенте::
+Регистрация в агенте и сборка подсказки промпта::
 
     registry = ToolRegistry()
     register_fs_tools(registry)          # корень — текущая папка
+    hint = registry.build_hint(intro=FS_TOOLS_INTRO, footer=SANDBOX_NOTE)
 
 Форматирование результата в ``format_display``::
 
@@ -71,7 +75,6 @@ __all__ = [
     "RegexSearchTool",
     "RenameFileTool",
     "FS_TOOL_CLASSES",
-    "FS_TOOLS_HINT",
     "build_fs_tools",
     "register_fs_tools",
     "get_formatter",
@@ -88,16 +91,6 @@ FS_TOOL_CLASSES: tuple[type[FsTool], ...] = (
     RenameFileTool,
     EditFileTool,
     RegexSearchTool,
-)
-
-#: Подсказка системному промпту о доступных инструментах и песочнице.
-FS_TOOLS_HINT = (
-    "Доступны инструменты работы с файлами проекта: fs_list (список), "
-    "fs_find (поиск по имени), fs_search_regex (поиск по regexp по содержимому), "
-    "fs_create (создать файл), fs_edit (редактировать файл), fs_rename "
-    "(переименовать/переместить), fs_delete (удалить). Все они работают "
-    "только внутри рабочей директории проекта — файлы вне её недоступны. "
-    "Пути в инструменты передавай относительно рабочей директории."
 )
 
 

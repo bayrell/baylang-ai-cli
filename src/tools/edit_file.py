@@ -39,6 +39,10 @@ class EditFileTool(FsTool):
         "replace_all=true заменяет все). Если old_text пуст — создаёт файл "
         "или целиком перезаписывает его содержимым new_text."
     )
+    HINT = (
+        "отредактировать файл: заменить фрагмент old_text на new_text "
+        "(или перезаписать файл целиком, если old_text пуст)"
+    )
     PARAMETERS = {
         "type": "object",
         "properties": {
