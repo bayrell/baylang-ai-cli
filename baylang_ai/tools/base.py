@@ -186,8 +186,6 @@ class FsTool(Tool, abc.ABC):
             return self.error(f"Некорректные параметры вызова: {exc}")
         except OSError as exc:
             return self.error(f"Файловая ошибка: {exc}")
-        if not isinstance(result, dict):
-            return self.error("Инструмент вернул неожиданный результат")
         return result
 
     @abc.abstractmethod
@@ -226,7 +224,10 @@ class FsTool(Tool, abc.ABC):
             Словарь ``{"tool": имя, "status": "ok", ...}``.
         """
         return fields
-
+    
+    def error(self, message: str) -> str:
+        return {"error": message}
+    
     def rel(self, path: Path) -> str:
         """Вернуть путь относительно корня песочницы для вывода.
 

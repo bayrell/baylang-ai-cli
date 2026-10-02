@@ -79,4 +79,4 @@ class ReadFileTool(FsTool):
             Однострочное сообщение о прочитанном файле: путь, число
             строк и размер; для ошибки — текст ошибки.
         """
-        return f"прочитан {params.get('path')}"
+        return f"Чтение {params.get('path')}"
