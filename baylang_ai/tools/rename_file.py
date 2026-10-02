@@ -107,7 +107,7 @@ class RenameFileTool(FsTool):
         Returns:
             Однострочное сообщение «старое → новое».
         """
-        if data.get("status") != "ok":
+        if data.get("error"):
             return f"Error: {data.get('error', 'неизвестная ошибка')}"
         kind = "папка" if data.get("type") == "dir" else "файл"
         return (
