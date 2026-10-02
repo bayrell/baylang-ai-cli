@@ -153,9 +153,9 @@ class TextMessage:
         """
         data: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.tool_id is not None:
-            data["tool_id"] = self.tool_id
+            data["tool_call_id"] = self.tool_id
         if self.tools:
-            data["tools"] = self.tools
+            data["tool_calls"] = self.tools
         return data
 
     def to_dict(self) -> dict[str, Any]:
@@ -256,10 +256,15 @@ class ToolResultMessage(TextMessage):
 
     MESSAGE_TYPE = "tool_result"
 
-    def __init__(self, content: str, tool_id: str) -> None:
+    def __init__(self, content: str, tool_id: str, name: str, answer: str) -> None:
         if not isinstance(tool_id, str) or not tool_id.strip():
             raise ValueError("ToolResultMessage требует непустой tool_id")
-        super().__init__(TextMessage.ROLE_TOOL, content, tool_id=tool_id)
+        super().__init__(
+            TextMessage.ROLE_TOOL, content=content,
+            tool_id=tool_id
+        )
+        self.name = name
+        self.answer = answer
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать сообщение в словарь для сохранения в JSON.
@@ -271,6 +276,8 @@ class ToolResultMessage(TextMessage):
         return {
             "type": self.MESSAGE_TYPE,
             "role": self.role,
+            "name": self.name,
+            "answer": self.answer,
             "content": self.content,
             "tool_id": self.tool_id,
         }
@@ -297,7 +304,10 @@ class ToolResultMessage(TextMessage):
         tool_id = data.get("tool_id") or data.get("tool_call_id") or ""
         if not isinstance(tool_id, str) or not tool_id.strip():
             raise ValueError("ToolResultMessage требует непустой tool_id")
-        return cls(data.get("content") or "", tool_id=tool_id)
+        return cls(content=data.get("content") or "", 
+            tool_id=tool_id, name=data.get("name"),
+            answer=data.get("answer")
+        )
 
     def __repr__(self) -> str:
         preview = self.content if len(self.content) <= 40 else self.content[:37] + "..."
@@ -326,8 +336,6 @@ class ToolsMessage(TextMessage):
 
     def __init__(
         self,
-        name: str = "",
-        answer: str = "",
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         if tools is None:
@@ -335,8 +343,6 @@ class ToolsMessage(TextMessage):
         if not isinstance(tools, list):
             raise ValueError("ToolsMessage.tools должен быть списком")
         super().__init__(TextMessage.ROLE_AI, tools=tools)
-        self.name = name
-        self.answer = answer
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать сообщение в словарь для сохранения в JSON.
@@ -350,9 +356,7 @@ class ToolsMessage(TextMessage):
         """
         return {
             "type": self.MESSAGE_TYPE,
-            "name": self.name,
             "role": self.role,
-            "answer": self.answer,
             "tools": list(self.tools or []),
         }
 
@@ -377,9 +381,7 @@ class ToolsMessage(TextMessage):
             tools = []
         if not isinstance(tools, list):
             raise ValueError("ToolsMessage.tools должен быть списком")
-        return cls(tools=tools, name=data.get("name"),
-            answer=data.get("answer")
-        )
+        return cls(tools=tools)
 
     def __repr__(self) -> str:
         count = len(self.tools or [])
@@ -994,7 +996,7 @@ class Tool:
         """
         return self._hint or self.description
 
-    def format_message(self, params: Optional[dict[str, Any]] = None) -> str:
+    def format_message(self, params: Optional[dict[str, Any]] = None, result: Any = None) -> str:
         """
         Форматирует сообщение для пользователя
         """
@@ -1134,11 +1136,11 @@ class ToolRegistry:
             raise ToolError(f"Инструмент {name!r} не найден в реестре", tool_name=name)
         return await tool.execute(params)
     
-    def format_message(self, name: str, params: Optional[dict[str, Any]] = None) -> str:
+    def format_message(self, name: str, params: Optional[dict[str, Any]] = None, result: Any = None) -> str:
         tool = self.tools.get(name)
         if not tool:
             return ""
-        return tool.format_message(params)
+        return tool.format_message(params, result)
     
     def __len__(self) -> int:
         return len(self.tools)
@@ -1261,7 +1263,7 @@ class Agent:
             if response.tools:
                 # Ответ с вызовами инструментов: показываем их пользователю,
                 # выполняем каждый инструмент и отдаём результат.
-                tools_message = ToolsMessage(response.tools)
+                tools_message = ToolsMessage(tools=response.tools)
                 self.context.add_message(tools_message)
                 yield tools_message
 
@@ -1269,8 +1271,12 @@ class Agent:
                     answer = ""
                     name, arguments, tool_id = parse_tool(tool, len(self.context))
                     try:
-                        answer = self.tools.format_message(name, arguments)
-                        result = await self.tools.execute(name, arguments)
+                        result = await self.tools.execute(
+                            name, arguments
+                        )
+                        answer = self.tools.format_message(
+                            name, arguments, result
+                        )
                         result_text = (
                             result
                             if isinstance(result, str)
@@ -1279,7 +1285,7 @@ class Agent:
                     except ToolError as exc:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
-                    result_message = ToolResultMessage(result_text, tool_id=tool_id,
+                    result_message = ToolResultMessage(content=result_text, tool_id=tool_id,
                         name=name, answer=answer
                     )
                     self.context.add_message(result_message)

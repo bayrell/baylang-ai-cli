@@ -206,7 +206,7 @@ class FsTool(Tool, abc.ABC):
 
     @staticmethod
     @abc.abstractmethod
-    def format_message(data: dict[str, Any]) -> str:
+    def format_message(params: dict[str, Any], result: Any = None) -> str:
         """Отформатировать результат инструмента для ``format_display``.
 
         Args:

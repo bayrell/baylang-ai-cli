@@ -87,7 +87,7 @@ class DeleteFileTool(FsTool):
         return self.ok(path=self.rel(target), deleted_type="file")
 
     @staticmethod
-    def format_message(data: dict[str, Any]) -> str:
+    def format_message(params: dict[str, Any], data: Any) -> str:
         """Отформатировать результат удаления для ``format_display``.
 
         Args:

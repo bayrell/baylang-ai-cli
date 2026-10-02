@@ -111,7 +111,7 @@ class FindFileTool(FsTool):
         )
 
     @staticmethod
-    def format_message(data: dict[str, Any]) -> str:
+    def format_message(params: dict[str, Any], data: Any) -> str:
         """Отформатировать результаты поиска для ``format_display``.
 
         Args:
@@ -123,15 +123,6 @@ class FindFileTool(FsTool):
         if data.get("status") != "ok":
             return f"❌ fs_find: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"🔍 fs_find '{data.get('pattern', '?')}' в {data.get('path', '.')} — "
-            f"найдено: {data.get('total', 0)}"
+            f"🔍 fs_find '{data.get('pattern', '?')}' в {data.get('path', '.')}"
         ]
-        for entry in data.get("matches", []):
-            marker = "📁" if entry.get("type") == "dir" else "📄"
-            suffix = "/" if entry.get("type") == "dir" else ""
-            lines.append(f"  {marker} {entry.get('path', '?')}{suffix}")
-        if data.get("truncated"):
-            lines.append("  … список усечён — увеличьте max_results")
-        if not data.get("matches"):
-            lines.append("  (ничего не найдено — попробуйте другой шаблон, например '*')")
         return "\n".join(lines)

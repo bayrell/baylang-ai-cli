@@ -98,7 +98,7 @@ class RenameFileTool(FsTool):
         )
 
     @staticmethod
-    def format_message(data: dict[str, Any]) -> str:
+    def format_message(params: dict[str, Any], data: Any) -> str:
         """Отформатировать результат переименования для ``format_display``.
 
         Args:

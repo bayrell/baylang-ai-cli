@@ -154,7 +154,7 @@ class RegexSearchTool(FsTool):
         )
 
     @staticmethod
-    def format_message(data: dict[str, Any]) -> str:
+    def format_message(params: dict[str, Any], data: Any) -> str:
         """Отформатировать результаты поиска по regexp для ``format_display``.
 
         Args:

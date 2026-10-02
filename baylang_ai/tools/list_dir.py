@@ -120,26 +120,15 @@ class ListDirTool(FsTool):
         )
 
     @staticmethod
-    def format_message(data: dict[str, Any]) -> str:
+    def format_message(params: dict[str, Any], data: Any) -> str:
         """Отформатировать список папки для ``format_display``.
-
-        Args:
-            data: Результат :meth:`run` (``ok`` или ``error``).
-
+        
         Returns:
             Многострочная строка со списком записей.
         """
         if data.get("status") != "ok":
-            return f"❌ fs_list: {data.get('error', 'неизвестная ошибка')}"
+            return f"❌ {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"📁 {data.get('path', '.')} — записей: {data.get('shown', 0)} из {data.get('total', 0)}"
+            f"📁 {data.get('path', '.')}"
         ]
-        for entry in data.get("entries", []):
-            name = entry.get("name", "?")
-            if entry.get("type") == "dir":
-                lines.append(f"  📁 {name}/")
-            else:
-                lines.append(f"  📄 {name} ({human_size(int(entry.get('size', -1)))})")
-        if data.get("truncated"):
-            lines.append("  … список усечён — увеличьте max_entries или уточните path")
         return "\n".join(lines)
