@@ -53,6 +53,7 @@ from typing import Any, Optional, Union
 from ..ai import Tool, ToolRegistry  # type: ignore[no-redef]
 
 from .base import FsTool, FsToolError, human_size
+from .read_file import ReadFileTool
 from .create_file import CreateFileTool
 from .delete_file import DeleteFileTool
 from .edit_file import EditFileTool
@@ -83,6 +84,7 @@ __all__ = [
 FS_TOOL_CLASSES: tuple[type[FsTool], ...] = (
     ListDirTool,
     FindFileTool,
+    ReadFileTool,
     CreateFileTool,
     DeleteFileTool,
     RenameFileTool,
