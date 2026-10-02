@@ -176,7 +176,7 @@ def format_display(message: TextMessage) -> str:
         Строка, готовая к печати.
     """
     if isinstance(message, ToolResultMessage):
-        return f"tool[{message.name}]> {message.answer}"
+        return f"tool[{message.name}]> {message.short}"
 
     if isinstance(message, ToolsMessage):
         return None

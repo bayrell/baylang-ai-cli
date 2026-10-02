@@ -256,7 +256,7 @@ class ToolResultMessage(TextMessage):
 
     MESSAGE_TYPE = "tool_result"
 
-    def __init__(self, content: str, tool_id: str, name: str, answer: str) -> None:
+    def __init__(self, content: str, tool_id: str, name: str, short: str) -> None:
         if not isinstance(tool_id, str) or not tool_id.strip():
             raise ValueError("ToolResultMessage требует непустой tool_id")
         super().__init__(
@@ -264,7 +264,7 @@ class ToolResultMessage(TextMessage):
             tool_id=tool_id
         )
         self.name = name
-        self.answer = answer
+        self.short = short
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать сообщение в словарь для сохранения в JSON.
@@ -277,7 +277,7 @@ class ToolResultMessage(TextMessage):
             "type": self.MESSAGE_TYPE,
             "role": self.role,
             "name": self.name,
-            "answer": self.answer,
+            "short": self.short,
             "content": self.content,
             "tool_id": self.tool_id,
         }
@@ -306,7 +306,7 @@ class ToolResultMessage(TextMessage):
             raise ValueError("ToolResultMessage требует непустой tool_id")
         return cls(content=data.get("content") or "", 
             tool_id=tool_id, name=data.get("name"),
-            answer=data.get("answer")
+            short=data.get("short")
         )
 
     def __repr__(self) -> str:
@@ -1268,13 +1268,13 @@ class Agent:
                 yield tools_message
 
                 for tool in response.tools:
-                    answer = ""
+                    short = ""
                     name, arguments, tool_id = parse_tool(tool, len(self.context))
                     try:
                         result = await self.tools.execute(
                             name, arguments
                         )
-                        answer = self.tools.format_message(
+                        short = self.tools.format_message(
                             name, arguments, result
                         )
                         result_text = (
@@ -1286,7 +1286,7 @@ class Agent:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
                     result_message = ToolResultMessage(content=result_text, tool_id=tool_id,
-                        name=name, answer=answer
+                        name=name, short=short
                     )
                     self.context.add_message(result_message)
                     yield result_message
