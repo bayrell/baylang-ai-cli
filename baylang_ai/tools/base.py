@@ -48,7 +48,7 @@ import abc
 from pathlib import Path
 from typing import Any, ClassVar, Iterator, Optional, Union
 
-from ai import Tool  # type: ignore[no-redef]
+from ..ai import Tool  # type: ignore[no-redef]
 
 __all__ = [
     "FsTool",

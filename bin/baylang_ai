@@ -1,80 +1,129 @@
 #!/usr/bin/env python3
-"""Консольный скрипт запуска BayLang AI (CLI).
 
-Запускает интерактивный чат BayLang AI с файловыми инструментами ``fs_*``,
-историями диалогов и логированием. Работает в двух режимах:
+import asyncio, argparse, os, sys, logging
+from dotenv import load_dotenv, find_dotenv
+from typing import Optional, Sequence
 
-* **установленный пакет** — импортируется модуль ``baylang_ai.main``
-  (после ``pip install .`` пакет виден откуда угодно; этот же скрипт
-  устанавливается командой ``pip`` как ``bin/baylang_ai``);
-* **прямой запуск из репозитория** — каталог ``src/`` рядом со скриптом
-  добавляется в ``sys.path``, и запускается модуль ``main``
-  (то же самое делает ``python src/main.py``).
-
-Все аргументы командной строки передаются приложению без изменений
-(список — ``./bin/baylang_ai --help``). Коды возврата: ``0`` — успех,
-``1`` — ошибка выполнения, ``2`` — ошибка конфигурации.
-
-Примеры::
-
-    ./bin/baylang_ai                          # новая сессия
-    ./bin/baylang_ai --model openai/gpt-4o-mini
-    ./bin/baylang_ai --history my-chat        # продолжить сохранённый диалог
-    ./bin/baylang_ai --list-histories         # список историй и выход
-"""
-
-from __future__ import annotations
-
-import importlib
-import sys
-from pathlib import Path
-from types import ModuleType
-
-#: Каталог с исходниками рядом со скриптом (репозиторий: <корень>/src).
-SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+from baylang_ai.app import run_app, \
+    ensure_app_dirs, setup_logging, ConfigurationError, \
+    BayLangError, build_agent, \
+    APP_NAME, APP_VERSION, DEFAULT_MODEL, \
+    ENV_MODEL, DEFAULT_SHOW_MESSAGES, ENV_SHOW_MESSAGES, \
+    LOG_FILE, EXIT_CONFIG_ERROR
 
 
-def load_entry_module() -> ModuleType:
-    """Загрузить модуль с точкой входа приложения.
+load_dotenv(dotenv_path=find_dotenv(usecwd=True))
+logger = logging.getLogger(__name__)
 
-    Сначала импортируется установленный пакет ``baylang_ai``; если его нет,
-    каталог ``src/`` добавляется в ``sys.path`` и импортируется модуль
-    ``main`` (прямой запуск из репозитория).
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Разобрать аргументы командной строки.
+
+    Args:
+        argv: Аргументы без имени программы; ``None`` — ``sys.argv[1:]``.
 
     Returns:
-        Модуль с функцией ``main()`` (``baylang_ai.main`` или ``main``).
-
-    Raises:
-        SystemExit: Если не найден ни установленный пакет ``baylang_ai``,
-            ни каталог ``src/`` рядом со скриптом (код 2).
+        Пространство имён с аргументами.
     """
-    try:
-        return importlib.import_module("baylang_ai.main")
-    except ModuleNotFoundError as exc:
-        # Fallback нужен только при отсутствии самого пакета: нехватку
-        # зависимостей (httpx, dotenv) не маскируем, а показываем как есть.
-        if exc.name not in ("baylang_ai", "baylang_ai.main"):
-            raise
-    if not (SRC_DIR / "main.py").is_file():
-        sys.stderr.write(
-            "Ошибка: не найден ни установленный пакет baylang_ai, "
-            f"ни каталог с исходниками {SRC_DIR}.\n"
-            "Установите пакет: pip install .\n"
-        )
-        raise SystemExit(2)
-    sys.path.insert(0, str(SRC_DIR))
-    return importlib.import_module("main")
+    parser = argparse.ArgumentParser(
+        prog="baylang",
+        description=f"{APP_NAME} {APP_VERSION} — чат с LLM через OpenRouter",
+    )
+    parser.add_argument(
+        "--model",
+        help=f"модель OpenRouter (по умолчанию: {DEFAULT_MODEL}, env {ENV_MODEL})",
+    )
+    parser.add_argument(
+        "--history",
+        "--load",
+        metavar="ИМЯ",
+        help=(
+            "загрузить сохранённую историю из ~/.baylang/history/<имя>.json "
+            "перед стартом (по умолчанию — новая сессия с чистой историей)"
+        ),
+    )
+    parser.add_argument(
+        "--show-messages",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "сколько последних сообщений показывать при загрузке истории "
+            f"(по умолчанию: {DEFAULT_SHOW_MESSAGES}, env {ENV_SHOW_MESSAGES})"
+        ),
+    )
+    parser.add_argument(
+        "--list-histories",
+        "--list",
+        action="store_true",
+        help="вывести список последних историй и завершиться",
+    )
+    parser.add_argument(
+        "--max-iters",
+        type=int,
+        default=100,
+        help="максимум итераций tool (по умолчанию: 100)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="температура генерации (по умолчанию: 0.7)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="подробное логирование и статистика ответов",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{APP_NAME} {APP_VERSION}",
+    )
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    """Запустить приложение BayLang AI, передав аргументы CLI без изменений.
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Оркестратор приложения: парсинг аргументов и запуск async-ядра.
+
+    Новая сессия стартует по умолчанию; история диалога сохраняется
+    автоматически и всегда (имя файла — метка времени, JSON pretty).
+    Логи работы пишутся в ``~/.baylang/logs/baylang.log`` (с ротацией).
+
+    Args:
+        argv: Аргументы командной строки; ``None`` — ``sys.argv[1:]``.
 
     Returns:
         Код выхода процесса: ``0`` — успех, ``1`` — ошибка выполнения,
         ``2`` — ошибка конфигурации.
     """
-    entry = load_entry_module()
-    return int(entry.main())
+    
+    args = parse_args(argv)
+    ensure_app_dirs()
+    setup_logging(verbose=args.verbose)
+    logger.debug("Логирование настроено: файл %s, verbose=%s", LOG_FILE, args.verbose)
+
+    if args.list_histories:
+        print_histories()
+        return EXIT_OK
+    
+    try:
+        agent = build_agent(args)
+    except ConfigurationError as exc:
+        print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
+        logger.error("Ошибка конфигурации: %s", exc)
+        return EXIT_CONFIG_ERROR
+    except BayLangError as exc:
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        logger.error("Ошибка: %s", exc)
+        return EXIT_CONFIG_ERROR
+    
+    try:
+        return asyncio.run(run_app(agent, args))
+    except KeyboardInterrupt:
+        print("\nДо встречи! 👋")
+        logger.info("Приложение прервано (KeyboardInterrupt)")
+        return EXIT_OK
 
 
 if __name__ == "__main__":

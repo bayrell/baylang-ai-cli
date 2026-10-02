@@ -59,13 +59,12 @@ import logging
 import os
 import sys
 import time
-from dotenv import load_dotenv
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
 
-from ai import (  # type: ignore[no-redef]
+from .ai import (
     Agent,
     BayLangError,
     ConfigurationError,
@@ -78,7 +77,7 @@ from ai import (  # type: ignore[no-redef]
     ToolResultMessage,
     ToolsMessage,
 )
-from tools import (  # type: ignore[no-redef]
+from .tools import (
     format_tool_payload,
     register_fs_tools,
 )
@@ -99,8 +98,6 @@ __all__ = [
     "print_histories",
     "print_last_messages",
 ]
-
-load_dotenv()
 
 APP_NAME = "BayLang AI"
 APP_VERSION = "1.0.0"
@@ -467,78 +464,6 @@ def print_histories(limit: int = HISTORY_LIST_LIMIT) -> None:
         print(f"  {path.stem:<24} {mtime}  {stat.st_size} байт")
 
 
-# ---------------------------------------------------------------------------
-# Аргументы командной строки
-# ---------------------------------------------------------------------------
-
-
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    """Разобрать аргументы командной строки.
-
-    Args:
-        argv: Аргументы без имени программы; ``None`` — ``sys.argv[1:]``.
-
-    Returns:
-        Пространство имён с аргументами.
-    """
-    parser = argparse.ArgumentParser(
-        prog="baylang",
-        description=f"{APP_NAME} {APP_VERSION} — чат с LLM через OpenRouter",
-    )
-    parser.add_argument(
-        "--model",
-        help=f"модель OpenRouter (по умолчанию: {DEFAULT_MODEL}, env {ENV_MODEL})",
-    )
-    parser.add_argument(
-        "--history",
-        "--load",
-        metavar="ИМЯ",
-        help=(
-            "загрузить сохранённую историю из ~/.baylang/history/<имя>.json "
-            "перед стартом (по умолчанию — новая сессия с чистой историей)"
-        ),
-    )
-    parser.add_argument(
-        "--show-messages",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "сколько последних сообщений показывать при загрузке истории "
-            f"(по умолчанию: {DEFAULT_SHOW_MESSAGES}, env {ENV_SHOW_MESSAGES})"
-        ),
-    )
-    parser.add_argument(
-        "--list-histories",
-        "--list",
-        action="store_true",
-        help="вывести список последних историй и завершиться",
-    )
-    parser.add_argument(
-        "--max-iters",
-        type=int,
-        default=100,
-        help="максимум итераций tool (по умолчанию: 100)",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.7,
-        help="температура генерации (по умолчанию: 0.7)",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="подробное логирование и статистика ответов",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"{APP_NAME} {APP_VERSION}",
-    )
-    return parser.parse_args(argv)
-
-
 def get_show_messages(args: argparse.Namespace) -> int:
     """Определить число последних сообщений для показа при загрузке истории.
 
@@ -821,7 +746,7 @@ async def run_interactive(
         autosave_history(agent, history_name)
 
 
-async def run_app(args: argparse.Namespace) -> int:
+async def run_app(agent: Agent, args: argparse.Namespace) -> int:
     """Выполнить приложение: сборка агента, режим работы, автосохранение.
 
     По умолчанию стартует новая сессия; старая история загружается только
@@ -839,16 +764,6 @@ async def run_app(args: argparse.Namespace) -> int:
         Код выхода процесса: ``0`` — успех, ``1`` — ошибка выполнения,
         ``2`` — ошибка конфигурации.
     """
-    try:
-        agent = build_agent(args)
-    except ConfigurationError as exc:
-        print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
-        logger.error("Ошибка конфигурации: %s", exc)
-        return EXIT_CONFIG_ERROR
-    except BayLangError as exc:
-        print(f"Ошибка: {exc}", file=sys.stderr)
-        logger.error("Ошибка: %s", exc)
-        return EXIT_CONFIG_ERROR
 
     session_name = new_session_name()
     logger.info("Запуск сессии %s (модель: %s)", session_name, agent.provider.get_model_name())
@@ -898,37 +813,3 @@ async def run_app(args: argparse.Namespace) -> int:
         logger.info("Сессия %s завершена с кодом %d", session_name, exit_code)
     return exit_code
 
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Оркестратор приложения: парсинг аргументов и запуск async-ядра.
-
-    Новая сессия стартует по умолчанию; история диалога сохраняется
-    автоматически и всегда (имя файла — метка времени, JSON pretty).
-    Логи работы пишутся в ``~/.baylang/logs/baylang.log`` (с ротацией).
-
-    Args:
-        argv: Аргументы командной строки; ``None`` — ``sys.argv[1:]``.
-
-    Returns:
-        Код выхода процесса: ``0`` — успех, ``1`` — ошибка выполнения,
-        ``2`` — ошибка конфигурации.
-    """
-    args = parse_args(argv)
-    ensure_app_dirs()
-    setup_logging(verbose=args.verbose)
-    logger.debug("Логирование настроено: файл %s, verbose=%s", LOG_FILE, args.verbose)
-
-    if args.list_histories:
-        print_histories()
-        return EXIT_OK
-
-    try:
-        return asyncio.run(run_app(args))
-    except KeyboardInterrupt:
-        print("\nДо встречи! 👋")
-        logger.info("Приложение прервано (KeyboardInterrupt)")
-        return EXIT_OK
-
-
-if __name__ == "__main__":
-    sys.exit(main())

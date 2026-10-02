@@ -50,7 +50,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from ai import Tool, ToolRegistry  # type: ignore[no-redef]
+from ..ai import Tool, ToolRegistry  # type: ignore[no-redef]
 
 from .base import FsTool, FsToolError, human_size
 from .create_file import CreateFileTool

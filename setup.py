@@ -34,7 +34,7 @@ from setuptools import setup
 ROOT = Path(__file__).resolve().parent
 
 setup(
-    name="baylang-ai",
+    name="baylang_ai",
     version="1.0.0",
     description=(
         "CLI и библиотека AI-агентов поверх OpenRouter "
@@ -46,20 +46,14 @@ setup(
     # Пакет baylang_ai живет в каталоге src/ (ядро ai.py, CLI main.py,
     # файловые инструменты tools/).
     packages=["baylang_ai", "baylang_ai.tools"],
-    package_dir={"baylang_ai": "src"},
     scripts=["bin/baylang_ai"],
-    python_requires=">=3.12",
+    python_requires=">=3.10",
     install_requires=[
         "httpx>=0.27,<1",
         "python-dotenv>=1.2.0",
     ],
     extras_require={
         "dev": ["pytest>=8,<9"],
-    },
-    entry_points={
-        "console_scripts": [
-            "baylang-ai=baylang_ai.main:main",
-        ],
     },
     classifiers=[
         "Development Status :: 4 - Beta",
