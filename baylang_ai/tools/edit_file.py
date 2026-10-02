@@ -153,11 +153,11 @@ class EditFileTool(FsTool):
             Однострочное сообщение о замене или записи файла.
         """
         if data.get("status") != "ok":
-            return f"❌ fs_edit: {data.get('error', 'неизвестная ошибка')}"
+            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         path = data.get("path", "?")
         size = human_size(int(data.get("bytes", 0)))
         if data.get("mode") == "replace":
-            return f"✂️ fs_edit: в {path} заменено вхождений — {data.get('replacements', 0)} ({size})"
+            return f"в {path} заменено вхождений"
         if data.get("created"):
-            return f"✅ fs_edit: создан {path} ({size})"
-        return f"✅ fs_edit: перезаписан {path} ({size})"
+            return f"создан {path}"
+        return f"перезаписан {path}"

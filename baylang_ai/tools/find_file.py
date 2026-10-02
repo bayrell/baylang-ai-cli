@@ -121,8 +121,8 @@ class FindFileTool(FsTool):
             Многострочная строка со списком найденных путей.
         """
         if data.get("status") != "ok":
-            return f"❌ fs_find: {data.get('error', 'неизвестная ошибка')}"
+            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"🔍 fs_find '{data.get('pattern', '?')}' в {data.get('path', '.')}"
+            f"Поиск '{data.get('pattern', '?')}' в {data.get('path', '.')}"
         ]
         return "\n".join(lines)

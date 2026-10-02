@@ -127,8 +127,8 @@ class ListDirTool(FsTool):
             Многострочная строка со списком записей.
         """
         if data.get("status") != "ok":
-            return f"❌ {data.get('error', 'неизвестная ошибка')}"
+            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"📁 {data.get('path', '.')}"
+            f"Поиск {data.get('path', '.')}"
         ]
         return "\n".join(lines)

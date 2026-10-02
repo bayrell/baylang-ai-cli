@@ -164,20 +164,8 @@ class RegexSearchTool(FsTool):
             Многострочная строка с совпадениями вида ``path:line: текст``.
         """
         if data.get("status") != "ok":
-            return f"❌ fs_search_regex: {data.get('error', 'неизвестная ошибка')}"
+            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"🔍 regexp '{data.get('pattern', '?')}' в {data.get('path', '.')} "
-            f"[{data.get('glob', '*')}] — совпадений: {data.get('matches_total', 0)} "
-            f"(файлов просмотрено: {data.get('files_searched', 0)})"
+            f"Поиск строки '{data.get('pattern', '?')}' в {data.get('path', '.')} "
         ]
-        for entry in data.get("matches", []):
-            text = entry.get("text", "")
-            lines.append(f"  {entry.get('path', '?')}:{entry.get('line', 0)}: {text}")
-        if data.get("truncated"):
-            lines.append("  … результаты усечены — увеличьте max_results или уточните glob/path")
-        if not data.get("matches"):
-            lines.append("  (совпадений нет — проверьте pattern или расширьте glob)")
-        skipped = int(data.get("files_skipped", 0))
-        if skipped:
-            lines.append(f"  (пропущено файлов: {skipped} — бинарные или больше 1 МБ)")
         return "\n".join(lines)

@@ -124,8 +124,8 @@ class CreateFileTool(FsTool):
             Однострочное сообщение о созданном/перезаписанном файле.
         """
         if data.get("status") != "ok":
-            return f"❌ fs_create: {data.get('error', 'неизвестная ошибка')}"
+            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         size = human_size(int(data.get("bytes", 0)))
         if data.get("overwritten"):
-            return f"♻️ fs_create: перезаписан {data.get('path', '?')} ({size})"
-        return f"✅ fs_create: создан {data.get('path', '?')} ({size})"
+            return f"перезаписан {data.get('path', '?')} ({size})"
+        return f"создан {data.get('path', '?')} ({size})"
