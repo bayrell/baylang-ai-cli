@@ -312,12 +312,9 @@ class ToolsMessage(TextMessage):
     и восстанавливать контекст с tool-цепочками в JSON.
 
     Attributes:
-        content: Текст ответа модели (может быть пустым, если модель
-            вернула только вызовы инструментов).
         tools: Список вызовов инструментов в формате провайдера.
 
     Args:
-        content: Текст ответа модели.
         tools: Список вызовов инструментов (допустим пустой список,
             но не ``None``).
 
@@ -329,14 +326,17 @@ class ToolsMessage(TextMessage):
 
     def __init__(
         self,
-        content: str = "",
+        name: str = "",
+        answer: str = "",
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         if tools is None:
             raise ValueError("ToolsMessage требует список tools (допустим пустой)")
         if not isinstance(tools, list):
             raise ValueError("ToolsMessage.tools должен быть списком")
-        super().__init__(TextMessage.ROLE_AI, content, tools=tools)
+        super().__init__(TextMessage.ROLE_AI, tools=tools)
+        self.name = name
+        self.answer = answer
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать сообщение в словарь для сохранения в JSON.
@@ -350,8 +350,9 @@ class ToolsMessage(TextMessage):
         """
         return {
             "type": self.MESSAGE_TYPE,
+            "name": self.name,
             "role": self.role,
-            "content": self.content,
+            "answer": self.answer,
             "tools": list(self.tools or []),
         }
 
@@ -376,7 +377,9 @@ class ToolsMessage(TextMessage):
             tools = []
         if not isinstance(tools, list):
             raise ValueError("ToolsMessage.tools должен быть списком")
-        return cls(data.get("content") or "", tools=tools)
+        return cls(tools=tools, name=data.get("name"),
+            answer=data.get("answer")
+        )
 
     def __repr__(self) -> str:
         count = len(self.tools or [])
@@ -1128,7 +1131,13 @@ class ToolRegistry:
         if tool is None:
             raise ToolError(f"Инструмент {name!r} не найден в реестре", tool_name=name)
         return await tool.execute(params)
-
+    
+    def format_message(self, name: str, params: Optional[dict[str, Any]] = None) -> str:
+        tool = self.tools.get(name)
+        if not tool:
+            return ""
+        return tool.format_message(params)
+    
     def __len__(self) -> int:
         return len(self.tools)
 
@@ -1241,17 +1250,24 @@ class Agent:
             self.last_response = response
 
             text = response.text.strip()
-
+            
+            if text:
+                message = TextMessage.assistant(text)
+                self.context.add_message(message)
+                yield message
+            
             if response.tools:
                 # Ответ с вызовами инструментов: показываем их пользователю,
                 # выполняем каждый инструмент и отдаём результат.
-                tools_message = ToolsMessage(text, response.tools)
+                tools_message = ToolsMessage(response.tools)
                 self.context.add_message(tools_message)
                 yield tools_message
 
                 for tool in response.tools:
+                    answer = ""
                     name, arguments, tool_id = parse_tool(tool, len(self.context))
                     try:
+                        answer = self.tools.format_message(name, arguments)
                         result = await self.tools.execute(name, arguments)
                         result_text = (
                             result
@@ -1261,17 +1277,15 @@ class Agent:
                     except ToolError as exc:
                         result_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
                         logger.warning("Инструмент %r вернул ошибку: %s", name, exc)
-                    result_message = ToolResultMessage(result_text, tool_id=tool_id)
+                    result_message = ToolResultMessage(result_text, tool_id=tool_id,
+                        name=name, answer=answer
+                    )
                     self.context.add_message(result_message)
                     yield result_message
 
                 await asyncio.sleep(self.delay)
                 continue
 
-            if text:
-                message = TextMessage.assistant(text)
-                self.context.add_message(message)
-                yield message
             return
 
         self.context.truncate(snapshot)

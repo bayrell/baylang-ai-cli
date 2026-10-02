@@ -77,9 +77,6 @@ __all__ = [
     "FS_TOOL_CLASSES",
     "build_fs_tools",
     "register_fs_tools",
-    "get_formatter",
-    "format_tool_result",
-    "format_tool_payload",
 ]
 
 #: Классы файловых инструментов в порядке регистрации.
@@ -130,72 +127,3 @@ def register_fs_tools(
         registry.register(instance)
         names.append(instance.name)
     return names
-
-
-def get_formatter(name: str) -> Optional[Any]:
-    """Найти метод format_message класса-инструмента по имени.
-
-    Args:
-        name: Имя инструмента (например, ``fs_list``).
-
-    Returns:
-        Статический метод ``format_message`` или ``None``, если инструмент
-        неизвестен.
-    """
-    for cls in FS_TOOL_CLASSES:
-        if cls.NAME == name:
-            return cls.format_message
-    return None
-
-
-def format_tool_result(name: str, data: dict[str, Any]) -> Optional[str]:
-    """Отформатировать результат инструмента его собственным format_message.
-
-    Args:
-        name: Имя инструмента.
-        data: Словарь результата инструмента.
-
-    Returns:
-        Отформатированная строка или ``None``, если инструмент неизвестен
-        или форматирование не удалось (тогда используется формат по умолчанию).
-    """
-    formatter = get_formatter(name)
-    if formatter is None:
-        return None
-    try:
-        return formatter(data)
-    except Exception as exc:  # форматирование не должно ронять вывод
-        logger.warning("format_message инструмента %r не справился: %s", name, exc)
-        return None
-
-
-def format_tool_payload(content: str) -> Optional[str]:
-    """Распознать JSON-результат инструмента и отформатировать его классом.
-
-    Используется из ``format_display``: если содержимое ToolResultMessage —
-    JSON с полем ``tool``, вызывается ``format_message`` соответствующего
-    класса инструмента.
-
-    Args:
-        content: Содержимое сообщения с результатом инструмента.
-
-    Returns:
-        Строка форматирования или ``None``, если содержимое не является
-        результатом известного инструмента (тогда ``format_display``
-        использует формат по умолчанию).
-    """
-    if not content:
-        return None
-    text = content.strip()
-    if not text.startswith("{"):
-        return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    name = data.get("tool")
-    if not isinstance(name, str) or not name:
-        return None
-    return format_tool_result(name, data)

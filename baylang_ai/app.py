@@ -43,7 +43,7 @@
 Все сообщения диалога (текст модели, вызовы инструментов, результаты их
 работы) выводятся через единую функцию форматирования :func:`format_display`;
 результаты инструментов ``fs_*`` дополнительно форматируются собственным
-``format_message`` каждого класса (через ``format_tool_payload``).
+``format_message`` каждого класса.
 Интерактивный режим получает сообщения по мере появления из асинхронного
 генератора :meth:`Agent.send_with`.
 
@@ -78,7 +78,6 @@ from .ai import (
     ToolsMessage,
 )
 from .tools import (
-    format_tool_payload,
     register_fs_tools,
 )
 
@@ -169,11 +168,6 @@ def format_display(message: TextMessage) -> str:
     вызовы инструментов — многострочно с аргументами и идентификаторами,
     остальные сообщения — с меткой роли (``you``, ``assistant``, ``system``).
 
-    Для результатов файловых инструментов (``fs_*``) используется их
-    собственный ``format_message``: JSON с полем ``tool`` распознаётся
-    через ``format_tool_payload`` и превращается в человекочитаемый вид.
-    Если распознать результат не удалось, выводится сырое содержимое.
-
     Args:
         message: Сообщение диалога (:class:`TextMessage` или его наследник
             :class:`ToolResultMessage` / :class:`ToolsMessage`).
@@ -182,34 +176,10 @@ def format_display(message: TextMessage) -> str:
         Строка, готовая к печати.
     """
     if isinstance(message, ToolResultMessage):
-        custom = format_tool_payload(message.content)
-        if custom:
-            return f"tool[{message.tool_id}]> {custom}"
-        content = message.content.strip()
-        if not content:
-            return f"tool[{message.tool_id}]> (пустой результат)"
-        return f"tool[{message.tool_id}]> {content}"
+        return f"tool[{message.tool_id}]> {message.answer}"
 
     if isinstance(message, ToolsMessage):
-        lines: list[str] = []
-        content = message.content.strip()
-        if content:
-            lines.append(f"assistant> {content}")
-        items: list[str] = []
-        for index, tool in enumerate(message.tools or [], start=1):
-            if not isinstance(tool, dict):
-                continue
-            function = tool.get("function") or {}
-            name = function.get("name") or "?"
-            arguments = function.get("arguments") or "{}"
-            tool_id = tool.get("id") or f"tool_{index}"
-            items.append(f"  ⚙ {name}({arguments}) — id={tool_id}")
-        if items:
-            lines.append("assistant> вызывает инструменты:")
-            lines.extend(items)
-        if not lines:
-            return "assistant> (вызовы инструментов без данных)"
-        return "\n".join(lines)
+        return None
 
     label = ROLE_LABELS.get(message.role, message.role)
     content = message.content.strip()
@@ -722,7 +692,9 @@ async def run_interactive(
         agent.context.add_message(TextMessage.user(line))
         try:
             async for message in agent.send_with():
-                print(format_display(message))
+                text = format_display(message)
+                if text:
+                    print(text)
         except ProviderError as exc:
             print(f"assistant> Ошибка запроса: {exc}")
             print("Проверьте сеть и API-ключ, затем попробуйте ещё раз.")
