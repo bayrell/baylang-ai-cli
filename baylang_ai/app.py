@@ -616,6 +616,7 @@ async def run_interactive(
     )
     while True:
         try:
+            print("")
             line = input("you> ")
         except (EOFError, KeyboardInterrupt):
             print("\nДо встречи! 👋")
@@ -692,6 +693,7 @@ async def run_interactive(
         agent.context.add_message(TextMessage.user(line))
         try:
             async for message in agent.send_with():
+                autosave_history(agent, history_name)
                 text = format_display(message)
                 if text:
                     print(text)
