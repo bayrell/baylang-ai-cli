@@ -152,8 +152,6 @@ class EditFileTool(FsTool):
         Returns:
             Однострочное сообщение о замене или записи файла.
         """
-        if data.get("status") != "ok":
-            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         path = data.get("path", "?")
         size = human_size(int(data.get("bytes", 0)))
         if data.get("mode") == "replace":

@@ -225,18 +225,7 @@ class FsTool(Tool, abc.ABC):
         Returns:
             Словарь ``{"tool": имя, "status": "ok", ...}``.
         """
-        return {"tool": self.NAME, "status": "ok", **fields}
-
-    def error(self, message: str) -> dict[str, Any]:
-        """Собрать результат-ошибку с меткой инструмента.
-
-        Args:
-            message: Человекочитаемое описание ошибки.
-
-        Returns:
-            Словарь ``{"tool": имя, "status": "error", "error": ...}``.
-        """
-        return {"tool": self.NAME, "status": "error", "error": str(message)}
+        return fields
 
     def rel(self, path: Path) -> str:
         """Вернуть путь относительно корня песочницы для вывода.

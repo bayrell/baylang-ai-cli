@@ -101,14 +101,7 @@ class FindFileTool(FsTool):
                 {"path": self.rel(item), "type": "dir" if is_dir else "file"}
             )
         matches.sort(key=lambda e: (e["type"] != "dir", e["path"]))
-        return self.ok(
-            pattern=pattern,
-            path=self.rel(target),
-            matches=matches,
-            total=total,
-            shown=len(matches),
-            truncated=truncated,
-        )
+        return matches
 
     @staticmethod
     def format_message(params: dict[str, Any], data: Any) -> str:
@@ -120,9 +113,7 @@ class FindFileTool(FsTool):
         Returns:
             Многострочная строка со списком найденных путей.
         """
-        if data.get("status") != "ok":
-            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"Поиск '{data.get('pattern', '?')}' в {data.get('path', '.')}"
+            f"Поиск '{params.get('pattern', '?')}' в {params.get('path', '.')}"
         ]
         return "\n".join(lines)

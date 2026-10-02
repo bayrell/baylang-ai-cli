@@ -143,9 +143,6 @@ class RegexSearchTool(FsTool):
                         }
                     )
         return self.ok(
-            pattern=pattern,
-            path=self.rel(target),
-            glob=name_filter,
             matches=matches,
             matches_total=matches_total,
             files_searched=files_searched,
@@ -163,9 +160,7 @@ class RegexSearchTool(FsTool):
         Returns:
             Многострочная строка с совпадениями вида ``path:line: текст``.
         """
-        if data.get("status") != "ok":
-            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"Поиск строки '{data.get('pattern', '?')}' в {data.get('path', '.')} "
+            f"Поиск строки '{params.get('pattern', '?')}' в {params.get('path', '.')} "
         ]
         return "\n".join(lines)

@@ -96,8 +96,6 @@ class DeleteFileTool(FsTool):
         Returns:
             Однострочное сообщение об удалённой записи.
         """
-        if data.get("status") != "ok":
-            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         path = data.get("path", "?")
         if data.get("deleted_type") == "dir":
             return f"удалена папка {path}/ вместе с содержимым"

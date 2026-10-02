@@ -110,14 +110,7 @@ class ListDirTool(FsTool):
                     entry["size"] = -1
             entries.append(entry)
         entries.sort(key=lambda e: (e["type"] != "dir", e["name"]))
-        return self.ok(
-            path=self.rel(target),
-            recursive=bool(recursive),
-            entries=entries,
-            total=total,
-            shown=len(entries),
-            truncated=truncated,
-        )
+        return entries
 
     @staticmethod
     def format_message(params: dict[str, Any], data: Any) -> str:
@@ -126,9 +119,7 @@ class ListDirTool(FsTool):
         Returns:
             Многострочная строка со списком записей.
         """
-        if data.get("status") != "ok":
-            return f"Error: {data.get('error', 'неизвестная ошибка')}"
         lines = [
-            f"Поиск {data.get('path', '.')}"
+            f"Поиск {params.get('path', '.')}"
         ]
         return "\n".join(lines)

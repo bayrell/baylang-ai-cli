@@ -106,12 +106,7 @@ class CreateFileTool(FsTool):
                 )
             parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return self.ok(
-            path=self.rel(target),
-            bytes=len(encoded),
-            created=not existed,
-            overwritten=existed,
-        )
+        return "File overwritten" if existed else "File created"
 
     @staticmethod
     def format_message(params: dict[str, Any], data: Any) -> str:
@@ -123,9 +118,6 @@ class CreateFileTool(FsTool):
         Returns:
             Однострочное сообщение о созданном/перезаписанном файле.
         """
-        if data.get("status") != "ok":
-            return f"Error: {data.get('error', 'неизвестная ошибка')}"
-        size = human_size(int(data.get("bytes", 0)))
-        if data.get("overwritten"):
-            return f"перезаписан {data.get('path', '?')} ({size})"
-        return f"создан {data.get('path', '?')} ({size})"
+        if data == "File overwritten":
+            return f"перезаписан {params.get('path', '?')}"
+        return f"создан {params.get('path', '?')}"
