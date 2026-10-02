@@ -737,7 +737,9 @@ class Provider(abc.ABC):
                 payload = self.build_payload(context, tools=tools, stream=False)
                 raw = await self.post_json(payload)
                 return self.parse_response(raw)
-            except ProviderError:
+            except ProviderError as err:
+                print(err)
+                print(err.body)
                 await asyncio.sleep(self.delay)
                 continue
 
